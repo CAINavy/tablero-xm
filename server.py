@@ -232,7 +232,7 @@ def panel_generacion(hoy):
 
 
 def panel_embalses(hoy):
-    ini = hoy - timedelta(days=30)
+    ini = hoy - timedelta(days=36)
     serie = []
     try:
         vol = dict(diarios(consultar("daily", M_VOLUMEN, "Sistema", ini, hoy)))
@@ -246,16 +246,18 @@ def panel_embalses(hoy):
             serie = [(d, v * 100.0) for d, v in serie]
     if not serie:
         raise RuntimeError("XM no devolvio datos de embalses")
+    completa = serie
+    serie = [(d, x) for d, x in serie if d > serie[-1][0] - timedelta(days=31)]   # grafica: 30 dias
     v = [x for _, x in serie]
 
     def hace(n):
-        objetivo = serie[-1][0] - timedelta(days=n)
-        prev = [x for d, x in serie if d <= objetivo]
+        objetivo = completa[-1][0] - timedelta(days=n)
+        prev = [x for d, x in completa if d <= objetivo]
         return prev[-1] if prev else None
 
     return {"fechas": [d.strftime("%Y-%m-%d") for d, _ in serie], "valores": v,
             "ultimo": v[-1], "fecha": serie[-1][0].strftime("%d/%m/%Y"),
-            "hace7": hace(7), "hace30": hace(30) if hace(30) is not None else hace(29)}
+            "hace7": hace(7), "hace30": hace(30)}
 
 
 PANELES = [("precio", panel_precio), ("demanda", panel_demanda),

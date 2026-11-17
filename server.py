@@ -213,9 +213,13 @@ def panel_generacion(hoy):
         serie_sistema(consultar("hourly", M_GENERACION, "Sistema", hoy - timedelta(days=8), hoy))))
     if not dias:
         raise RuntimeError("XM no devolvio generacion")
-    dia = dias[-1][0]
-    # 2) Solo para ese dia se descarga el detalle por planta
-    por_recurso = horarios(consultar("hourly", M_GENERACION, "Recurso", dia, dia))
+    # 2) Solo para ese dia se descarga el detalle por planta; si XM aun no lo
+    #    publica, se prueba con los dias anteriores
+    por_recurso = {}
+    for dia, _ in reversed(dias[-3:]):
+        por_recurso = horarios(consultar("hourly", M_GENERACION, "Recurso", dia, dia))
+        if por_recurso:
+            break
     if not por_recurso:
         raise RuntimeError("XM no devolvio generacion por planta")
     suma = dict((t, 0.0) for t in TECNOLOGIAS)

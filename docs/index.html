@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0d1117">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icono-192.png">
+<title>Energía XM</title>
+<style>
+  html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;
+    font-family:Roboto,Arial,sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
+  #app{display:flex;flex-direction:column;height:100%;box-sizing:border-box}
+  #main{flex:1;display:flex;flex-direction:column;padding:2.5vmin 3vmin 1vmin;min-height:0}
+  .top{display:flex;justify-content:space-between;align-items:baseline}
+  #tit{font-size:4vmin;color:#c9d1d9;letter-spacing:.06em;text-transform:uppercase;font-weight:700}
+  #meta{font-size:2.8vmin;color:#6e7681}
+  .fila{display:flex;align-items:baseline;flex-wrap:wrap;margin-top:.5vmin}
+  #valor{font-size:15vmin;font-weight:700;line-height:1;color:#f5b301;margin-right:2vmin}
+  #uni{font-size:5vmin;color:#c9d1d9}
+  #sub{font-size:3.4vmin;color:#8b949e;margin-top:.6vmin}
+  .stats{display:flex;margin:1.4vmin 0 .6vmin}
+  .st{flex:1;font-size:3.2vmin;color:#8b949e}
+  .st b{display:block;font-size:4.6vmin;color:#e6edf3}
+  #cont{flex:1;position:relative;min-height:0}
+  canvas{position:absolute;left:0;top:0;width:100%;height:100%}
+  #barra{display:flex;border-top:1px solid #21262d}
+  .tab{flex:1;padding:1.2vmin 1vmin 1.4vmin;text-align:center;border-top:.7vmin solid transparent;
+    color:#6e7681;font-size:2.8vmin}
+  .tab b{display:block;font-size:4.2vmin;color:#8b949e;white-space:nowrap}
+  .tab.on{border-top-color:#f5b301;background:#161b22;color:#c9d1d9}
+  .tab.on b{color:#e6edf3}
+  #aviso{position:fixed;right:2vmin;top:2vmin;font-size:2.8vmin;color:#0d1117;background:#f5b301;
+    padding:.6vmin 1.4vmin;border-radius:1vmin}
+</style></head>
+<body><div id="app">
+  <div id="main">
+    <div class="top"><span id="tit">Cargando</span><span id="meta"></span></div>
+    <div class="fila"><span id="valor">--</span><span id="uni"></span></div>
+    <div id="sub">Consultando XM...</div>
+    <div class="stats" id="stats">
+      <div class="st"><span id="l1"></span><b id="s1">--</b></div>
+      <div class="st"><span id="l2"></span><b id="s2">--</b></div>
+      <div class="st"><span id="l3"></span><b id="s3">--</b></div>
+    </div>
+    <div id="cont"><canvas id="g"></canvas></div>
+  </div>
+  <div id="barra">
+    <div class="tab" data-i="0">Precio $/kWh<b id="t0">--</b></div>
+    <div class="tab" data-i="1">Demanda MW<b id="t1">--</b></div>
+    <div class="tab" data-i="2">Renovable<b id="t2">--</b></div>
+    <div class="tab" data-i="3">Embalses<b id="t3">--</b></div>
+  </div>
+</div>
+<div id="aviso">Toca para pantalla completa</div>
+<script>
+var D = {}, pagina = 0, pausaHasta = 0, ROTAR_SEG = 12;
+var PAGS = ['precio','demanda','generacion','embalses'];
+var mP = location.search.match(/p=(\d)/); if(mP) pagina = parseInt(mP[1],10) % 4;
+var COLORES = {'Hidráulica':'#3987e5','Térmica':'#d95926','Eólica':'#199e70','Solar':'#c98500',
+               'Biomasa y cogen.':'#d55181','Otras':'#6e7681'};
+
+function $(id){ return document.getElementById(id); }
+function f(n, dec){
+  if(n === null || n === undefined || isNaN(n)) return '--';
+  try{ return n.toLocaleString('es-CO',{minimumFractionDigits:dec,maximumFractionDigits:dec}); }
+  catch(e){ return n.toFixed(dec); }
+}
+function fs(k){ return Math.max(10, Math.round(Math.min(window.innerWidth, window.innerHeight)*k)); }
+
+// ---------- graficas ----------
+function lienzo(){
+  var c = $('g'), box = $('cont'), r = window.devicePixelRatio || 1;
+  var W = box.clientWidth, H = box.clientHeight;
+  c.width = W*r; c.height = H*r;
+  var x = c.getContext('2d'); x.setTransform(r,0,0,r,0,0); x.clearRect(0,0,W,H);
+  return {x:x, W:W, H:H};
+}
+
+function linea(vals, etiqueta, cadaN, color, dec){
+  var L0 = lienzo(), x = L0.x, W = L0.W, H = L0.H, n = vals.length;
+  if(!n || H < 30) return;
+  var t = fs(0.032), L = t*3.8, R = t*0.8, T = t*0.8, B = t*2;
+  var mn = Math.min.apply(null,vals), mx = Math.max.apply(null,vals);
+  var pad = (mx-mn)*0.15 || Math.abs(mx)*0.05 || 1; mn = mn-pad; mx = mx+pad;
+  function X(i){ return L + (W-L-R) * (n>1 ? i/(n-1) : 0.5); }
+  function Y(v){ return T + (H-T-B) * (1-(v-mn)/(mx-mn)); }
+  x.font = t+'px Roboto,Arial'; x.textBaseline = 'middle';
+  for(var k=0;k<=3;k++){
+    var v = mn + (mx-mn)*k/3, y = Y(v);
+    x.strokeStyle='#21262d'; x.lineWidth=1; x.beginPath(); x.moveTo(L,y); x.lineTo(W-R,y); x.stroke();
+    x.fillStyle='#8b949e'; x.textAlign='right'; x.fillText(f(v,dec), L-t*0.4, y);
+  }
+  x.textAlign='center'; x.textBaseline='top';
+  for(var i=0;i<n;i++){
+    if(i%cadaN===0 || (i===n-1 && (n-1)%cadaN >= cadaN/2)) x.fillText(etiqueta(i), X(i), H-B+t*0.5);
+  }
+  var g = x.createLinearGradient(0,T,0,H-B);
+  g.addColorStop(0, color+'55'); g.addColorStop(1, color+'00');
+  x.beginPath(); x.moveTo(X(0),H-B);
+  for(i=0;i<n;i++) x.lineTo(X(i),Y(vals[i]));
+  x.lineTo(X(n-1),H-B); x.closePath(); x.fillStyle=g; x.fill();
+  x.beginPath(); for(i=0;i<n;i++){ if(i) x.lineTo(X(i),Y(vals[i])); else x.moveTo(X(i),Y(vals[i])); }
+  x.strokeStyle=color; x.lineWidth=Math.max(2,t*0.16); x.lineJoin='round'; x.stroke();
+  x.beginPath(); x.arc(X(n-1),Y(vals[n-1]),t*0.32,0,6.3); x.fillStyle=color; x.fill();
+}
+
+function barras(tecs){
+  var L0 = lienzo(), x = L0.x, W = L0.W, H = L0.H, n = tecs.length;
+  if(!n || H < 30) return;
+  var t = fs(0.036), fila = Math.min(H/n, t*2.4), alto = Math.max(6, fila*0.5);
+  x.font = t+'px Roboto,Arial'; x.textBaseline='middle';
+  var Lnom = 0; for(var i=0;i<n;i++) Lnom = Math.max(Lnom, x.measureText(tecs[i].nombre).width);
+  Lnom += t*0.8;
+  x.font = 'bold '+t+'px Roboto,Arial'; var wPct = x.measureText('100,0 %').width + t*0.5;
+  x.font = (t*0.8)+'px Roboto,Arial'; var wGwh = x.measureText('000,0 GWh').width;
+  var ancho = W - Lnom - t*0.5 - wPct - wGwh;
+  var max = 0; for(i=0;i<n;i++) max = Math.max(max, tecs[i].pct);
+  x.font = t+'px Roboto,Arial';
+  for(i=0;i<n;i++){
+    var y = fila*i + fila/2, w = Math.max(3, ancho * tecs[i].pct / max), c = COLORES[tecs[i].nombre] || '#6e7681';
+    x.fillStyle = '#c9d1d9'; x.textAlign='left'; x.fillText(tecs[i].nombre, 0, y);
+    x.fillStyle = c; x.beginPath();
+    var r = Math.min(4, alto/2, w/2), x0 = Lnom, y0 = y-alto/2;
+    x.moveTo(x0,y0); x.lineTo(x0+w-r,y0); x.arcTo(x0+w,y0,x0+w,y0+r,r);
+    x.lineTo(x0+w,y0+alto-r); x.arcTo(x0+w,y0+alto,x0+w-r,y0+alto,r); x.lineTo(x0,y0+alto); x.closePath(); x.fill();
+    x.fillStyle = '#e6edf3'; x.font = 'bold '+t+'px Roboto,Arial';
+    x.fillText(f(tecs[i].pct,1)+' %', x0+w+t*0.5, y);
+    x.fillStyle = '#8b949e'; x.font = (t*0.8)+'px Roboto,Arial';
+    x.fillText(f(tecs[i].gwh,1)+' GWh', x0+w+t*0.5+wPct, y);
+    x.font = t+'px Roboto,Arial';
+  }
+}
+
+// ---------- paginas ----------
+function poner(tit, valor, uni, sub, est){
+  $('tit').innerHTML = tit; $('valor').innerHTML = valor; $('uni').innerHTML = uni; $('sub').innerHTML = sub;
+  $('stats').style.display = est ? 'flex' : 'none';
+  if(est) for(var i=0;i<3;i++){ $('l'+(i+1)).innerHTML = est[i][0]; $('s'+(i+1)).innerHTML = est[i][1]; }
+}
+function hora(s){ return s.substr(11,2)+'h'; }
+function dia(s){ return s.substr(8,2)+'/'+s.substr(5,2); }
+
+function mostrar(){
+  var p = PAGS[pagina], d = D[p], err = (D.errores||{})[p];
+  var tabs = document.querySelectorAll('.tab');
+  for(var i=0;i<tabs.length;i++) tabs[i].className = 'tab' + (i===pagina ? ' on' : '');
+  $('meta').innerHTML = 'XM &middot; ' + (D.consultado || '');
+  var TIT = {precio:'Precio de bolsa', demanda:'Demanda del SIN', generacion:'Generación por tecnología', embalses:'Nivel de embalses'};
+  if(!d){
+    poner(TIT[p], '--', '', err ? 'Sin datos de XM: '+err : 'Consultando XM...', null);
+    lienzo(); return;
+  }
+  if(p==='precio'){
+    poner(TIT[p], f(d.ultimo,1), 'COP/kWh', 'Hora '+d.ultima_hora+' &middot; últimas 24 h publicadas',
+      [['Promedio',f(d.promedio,1)],['Mínimo',f(d.minimo,1)],['Máximo',f(d.maximo,1)]]);
+    linea(d.valores, function(i){ return hora(d.horas[i]); }, 4, '#f5b301', 0);
+  } else if(p==='demanda'){
+    poner(TIT[p], f(d.ultimo,0), 'MW', 'Hora '+d.ultima_hora+' &middot; últimas 24 h publicadas',
+      [['Energía 24 h',f(d.total_gwh,1)+' GWh'],['Mínimo',f(d.minimo,0)+' MW'],['Pico',f(d.maximo,0)+' MW']]);
+    linea(d.valores, function(i){ return hora(d.horas[i]); }, 4, '#3987e5', 0);
+  } else if(p==='generacion'){
+    poner(TIT[p], f(d.renovable_pct,1), '% renovable', 'Día '+d.fecha+' &middot; total '+f(d.total_gwh,1)+' GWh', null);
+    barras(d.tecnologias);
+  } else {
+    poner(TIT[p], f(d.ultimo,1), '% de volumen útil', 'Día '+d.fecha+' &middot; últimos 30 días',
+      [['Hace 7 días',f(d.hace7,1)+' %'],['Hace 30 días',f(d.hace30,1)+' %'],
+       ['Cambio 30 d',(d.hace30!==null ? (d.ultimo-d.hace30>=0?'+':'')+f(d.ultimo-d.hace30,1)+' pts' : '--')]]);
+    linea(d.valores, function(i){ return dia(d.fechas[i]); }, 7, '#199e70', 0);
+  }
+}
+
+function barraInferior(){
+  $('t0').innerHTML = D.precio ? f(D.precio.ultimo,0) : '--';
+  $('t1').innerHTML = D.demanda ? f(D.demanda.ultimo,0) : '--';
+  $('t2').innerHTML = D.generacion ? f(D.generacion.renovable_pct,0)+' %' : '--';
+  $('t3').innerHTML = D.embalses ? f(D.embalses.ultimo,0)+' %' : '--';
+}
+
+function ir(i, manual){
+  pagina = (i + PAGS.length) % PAGS.length;
+  if(manual) pausaHasta = Date.now() + 60000;
+  mostrar();
+}
+setInterval(function(){ if(Date.now() > pausaHasta) ir(pagina+1, false); }, ROTAR_SEG*1000);
+
+function cargar(){
+  var q = new XMLHttpRequest();
+  q.open('GET','datos.json?t='+Date.now(),true);
+  q.onreadystatechange = function(){
+    if(q.readyState!==4) return;
+    try{ D = JSON.parse(q.responseText); barraInferior(); mostrar(); }catch(e){}
+  };
+  q.send();
+}
+window.onresize = mostrar;
+cargar(); setInterval(cargar, 5*60*1000);
+
+// ---------- toques: pantalla completa, siguiente pagina, ir a un panel ----------
+function enPantallaCompleta(){
+  return document.fullscreenElement || document.webkitFullscreenElement ||
+         (window.matchMedia && window.matchMedia('(display-mode: fullscreen)').matches);
+}
+function actualizarAviso(){ $('aviso').style.display = enPantallaCompleta() ? 'none' : 'block'; }
+document.addEventListener('click', function(ev){
+  pedirWakeLock();
+  if(!enPantallaCompleta()){
+    var el = document.documentElement, fn = el.requestFullscreen || el.webkitRequestFullscreen;
+    if(fn){
+      var pr = fn.call(el);
+      if(pr && pr.then) pr.then(function(){
+        try{ screen.orientation.lock('landscape').catch(function(){}); }catch(e){}
+      }).catch(function(){});
+      return;
+    }
+  }
+  var n = ev.target;
+  while(n && n !== document.body){
+    if(n.getAttribute && n.getAttribute('data-i') !== null){ ir(parseInt(n.getAttribute('data-i'),10), true); return; }
+    n = n.parentNode;
+  }
+  ir(ev.clientX < window.innerWidth/3 ? pagina-1 : pagina+1, true);
+});
+document.addEventListener('fullscreenchange', function(){ actualizarAviso(); setTimeout(mostrar,300); });
+document.addEventListener('webkitfullscreenchange', function(){ actualizarAviso(); setTimeout(mostrar,300); });
+actualizarAviso();
+
+// ---------- mantener la pantalla encendida ----------
+var wl = null;
+function pedirWakeLock(){
+  if(!('wakeLock' in navigator) || wl) return;
+  navigator.wakeLock.request('screen').then(function(l){
+    wl = l; l.addEventListener('release', function(){ wl = null; });
+  }).catch(function(){});
+}
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') pedirWakeLock(); });
+pedirWakeLock();
+if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(function(){}); }
+</script></body></html>

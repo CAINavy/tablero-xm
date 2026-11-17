@@ -9,15 +9,17 @@ Pensado para un celular Android viejo con Termux.
   python server.py --probar      -> consulta XM una vez y muestra que funciono
   python server.py --metricas X  -> busca metricas de XM que contengan X
 
-Paneles:
+Paneles (en pantalla son 3):
   1. Precio de Bolsa Nacional   (PrecBolsNaci, horario, COP/kWh)
-  2. Demanda del SIN            (DemaSIN, diario, kWh -> GWh/dia)
-  3. Generacion por tecnologia  (Gene por Recurso + ListadoRecursos)
-  4. Nivel de embalses          (VoluUtilDiarEner / CapaUtilDiarEner, diario)
+  2. Demanda del SIN            (curva de hoy en tiempo real, de captura.py, + DemaSIN de 5 dias)
+  3. Generacion y embalses      (Gene por Recurso + ListadoRecursos, con la curva solar del dia;
+                                 VoluUtilDiarEner / CapaUtilDiarEner, diario)
 """
 
 import base64
+import html
 import json
+import re
 import ssl
 import sys
 import threading
@@ -44,7 +46,7 @@ M_PORC_EMBALSE = "PorcVoluUtilDiar"           # respaldo si falla el calculo
 TECNOLOGIAS = ["Hidráulica", "Térmica", "Eólica", "Solar", "Biomasa y cogen.", "Otras"]
 RENOVABLES = ("Hidráulica", "Eólica", "Solar", "Biomasa y cogen.")
 
-_cache = {"precio": None, "demanda": None, "generacion": None, "embalses": None,
+_cache = {"precio": None, "demanda": None, "generacion": None, "embalses": None, "irradiancia": None,
           "errores": {}, "consultado": None}
 _recursos = {"mapa": None, "fecha": 0}
 _lock = threading.Lock()
@@ -223,8 +225,14 @@ def panel_generacion(hoy):
     if not por_recurso:
         raise RuntimeError("XM no devolvio generacion por planta")
     suma = dict((t, 0.0) for t in TECNOLOGIAS)
+    solar_h = [0.0] * 24          # kWh de cada hora = MW promedio de esa hora x 1000
     for cod, pts in por_recurso.items():
-        suma[mapa.get(cod, "Otras")] += sum(x for t, x in pts if t.date() == dia)
+        tec = mapa.get(cod, "Otras")
+        suma[tec] += sum(x for t, x in pts if t.date() == dia)
+        if tec == "Solar":
+            for t, x in pts:
+                if t.date() == dia:
+                    solar_h[t.hour] += x
     total = sum(suma.values())
     if total <= 0:
         raise RuntimeError("generacion en cero")
@@ -232,7 +240,47 @@ def panel_generacion(hoy):
             for t in TECNOLOGIAS if suma[t] > 0]
     return {"fecha": dia.strftime("%d/%m/%Y"), "total_gwh": total / 1e6,
             "renovable_pct": 100.0 * sum(suma[t] for t in RENOVABLES) / total,
-            "tecnologias": tecs}
+            "tecnologias": tecs, "solar_mw": [round(x / 1000.0, 1) for x in solar_h]}
+
+
+URL_IRRADIANCIA = "https://www.tutiempo.net/radiacion-solar/yopal.html"
+
+
+def leer_irradiancia(texto_html, hoy):
+    """Pronostico horario de irradiancia (W/m2) de hoy en la pagina de tutiempo.net.
+    Cada dia aparece como "Hoy 17 de Noviembre ... 6189 wh/m2 ... 06:00 11 w/m2 ... 17:00 31 w/m2"."""
+    texto = html.unescape(re.sub(r"<[^>]+>", " ", texto_html))
+    texto = re.sub(r"\s+", " ", texto)
+    dias = list(re.finditer(r"(Hoy|Mañana|Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)"
+                            r" (\d{1,2}) de [A-Za-zÁÉÍÓÚáéíóú]+", texto))
+    for i, m in enumerate(dias):
+        if int(m.group(2)) != hoy.day:
+            continue
+        bloque = texto[m.end(): dias[i + 1].start() if i + 1 < len(dias) else len(texto)]
+        horas = [0.0] * 24
+        n = 0
+        for h, v in re.findall(r"(\d{1,2}):00 ?(\d+(?:[.,]\d+)?) ?w/m2", bloque, re.I):
+            if 0 <= int(h) < 24:
+                horas[int(h)] = float(v.replace(",", "."))
+                n += 1
+        total = re.search(r"(\d+(?:[.,]\d+)?) ?wh/m2", bloque, re.I)
+        sol = re.search(r"(\d{1,2}:\d{2}) ?(\d{1,2}:\d{2})", bloque)
+        if n >= 6:
+            return {"fecha": hoy.strftime("%d/%m/%Y"), "w_m2": horas,
+                    "total_wh_m2": float(total.group(1).replace(",", ".")) if total else sum(horas),
+                    "salida": sol.group(1) if sol else None, "puesta": sol.group(2) if sol else None}
+    return None
+
+
+def panel_irradiancia(hoy):
+    req = urllib.request.Request(URL_IRRADIANCIA, headers={
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36",
+        "Accept-Language": "es-CO,es;q=0.9"})
+    with urllib.request.urlopen(req, timeout=60, context=ssl.create_default_context()) as r:
+        datos = leer_irradiancia(r.read().decode("utf-8", "replace"), hoy)
+    if not datos:
+        raise RuntimeError("tutiempo.net no trajo la irradiancia de hoy")
+    return datos
 
 
 def diarios_por_tramos(metrica, ini, fin, entidad="Sistema"):
@@ -275,7 +323,8 @@ def panel_embalses(hoy):
 
 
 PANELES = [("precio", panel_precio), ("demanda", panel_demanda),
-           ("generacion", panel_generacion), ("embalses", panel_embalses)]
+           ("generacion", panel_generacion), ("embalses", panel_embalses),
+           ("irradiancia", panel_irradiancia)]
 
 
 def actualizar(verboso=False):
@@ -305,6 +354,8 @@ def resumen(nombre, d):
             "%s %.0f%%" % (t["nombre"], t["pct"]) for t in d["tecnologias"])
     if nombre == "embalses":
         return "%.1f %% (%s)" % (d["ultimo"], d["fecha"])
+    if nombre == "irradiancia":
+        return "%.0f Wh/m2 en Yopal (%s), maximo %.0f W/m2" % (d["total_wh_m2"], d["fecha"], max(d["w_m2"]))
     return ""
 
 
@@ -344,6 +395,10 @@ PAGINA = r"""<!DOCTYPE html>
   .top{display:flex;justify-content:space-between;align-items:baseline}
   #tit{font-size:4vmin;color:#c9d1d9;letter-spacing:.06em;text-transform:uppercase;font-weight:700}
   #meta{font-size:2.8vmin;color:#6e7681}
+  #extra{margin-left:auto;text-align:right;color:#f0642a;display:none}
+  #extra b{font-size:7vmin;font-weight:700;line-height:1}
+  #extra i{font-style:normal;font-size:3.6vmin;margin-left:1vmin}
+  #extra small{display:block;font-size:2.8vmin;color:#c98a6e;margin-top:.4vmin}
   .fila{display:flex;align-items:baseline;flex-wrap:wrap;margin-top:.5vmin}
   #valor{font-size:15vmin;font-weight:700;line-height:1;color:#f5b301;margin-right:2vmin}
   #uni{font-size:5vmin;color:#c9d1d9}
@@ -368,7 +423,7 @@ PAGINA = r"""<!DOCTYPE html>
 <body><div id="app">
   <div id="main">
     <div class="top"><span id="tit">Cargando</span><span id="meta"></span></div>
-    <div class="fila" id="fila"><span id="valor">--</span><span id="uni"></span></div>
+    <div class="fila" id="fila"><span id="valor">--</span><span id="uni"></span><span id="extra"></span></div>
     <div id="sub">Consultando XM...</div>
     <div class="stats" id="stats">
       <div class="st"><span id="l1"></span><b id="s1">--</b></div>
@@ -454,6 +509,66 @@ function linea(vals, etiqueta, cadaN, color, dec){
   var L = lienzo(); lineaEn(L.x, 0, 0, L.W, L.H, vals, etiqueta, cadaN, color, dec, fs(0.032));
 }
 
+// Precio (arriba) e irradiancia de Yopal (abajo): mismas horas, misma altura, mismo eje X
+var C_IRR = '#f0642a';
+function precioEIrradiancia(d, ir){
+  var L = lienzo(), x = L.x, W = L.W, H = L.H, t = fs(0.03);
+  if(!ir){ lineaEn(x, 0, 0, W, H, d.valores, function(i){ return hora(d.horas[i]); }, 4, '#f5b301', 0, t); return; }
+  // Precio (eje izquierdo, amarillo) e irradiancia (eje derecho, naranja rojizo) sobrepuestos, por hora del dia
+  var horas = d.horas.map(function(h){ return parseInt(h.substr(11,2),10); });
+  var pv = d.valores, iv = horas.map(function(h){ return ir.w_m2[h] || 0; }), n = pv.length;
+  var pmn = Math.min.apply(null,pv), pmx = Math.max.apply(null,pv), pad = (pmx-pmn)*0.15 || pmx*0.05 || 1;
+  pmn -= pad; pmx += pad;
+  var imx = escala(0, Math.max.apply(null, iv)*1.05 || 1, 3).mx;
+  x.font = t+'px Roboto,Arial';
+  var Lm = x.measureText(f(pmx,0)).width + t*0.8, R = x.measureText(f(imx,0)).width + t*0.8, T = t*2.2, B = t*2;
+  function X(i){ return Lm + (W-Lm-R) * (n>1 ? i/(n-1) : 0.5); }
+  function YP(v){ return T + (H-T-B) * (1-(v-pmn)/(pmx-pmn)); }
+  function YI(v){ return T + (H-T-B) * (1 - v/imx); }
+  // leyenda
+  x.textBaseline='middle'; x.textAlign='left';
+  x.strokeStyle='#f5b301'; x.lineWidth=Math.max(3,t*0.2); x.beginPath(); x.moveTo(Lm, t*0.7); x.lineTo(Lm+t*1.1, t*0.7); x.stroke();
+  x.fillStyle='#f5b301'; x.fillText('Precio COP/kWh', Lm+t*1.4, t*0.7);
+  var lx = Lm + t*1.4 + x.measureText('Precio COP/kWh').width + t*1.4;
+  x.fillStyle=C_IRR; x.fillRect(lx, t*0.4, t*0.9, t*0.6);
+  x.fillText('Irradiancia Yopal, pronóstico hoy (W/m²)', lx+t*1.2, t*0.7);
+  // rejilla con 4 lineas compartidas: precio a la izquierda, irradiancia a la derecha
+  for(var k=0;k<=3;k++){
+    var y = T + (H-T-B)*(1-k/3);
+    x.strokeStyle='#21262d'; x.lineWidth=1; x.beginPath(); x.moveTo(Lm,y); x.lineTo(W-R,y); x.stroke();
+    x.textAlign='right'; x.fillStyle='#d9a400'; x.fillText(f(pmn+(pmx-pmn)*k/3,0), Lm-t*0.4, y);
+    x.textAlign='left'; x.fillStyle=C_IRR; x.fillText(f(imx*k/3,0), W-R+t*0.4, y);
+  }
+  x.textBaseline='top'; x.fillStyle='#8b949e';
+  for(var i=0;i<n;i++){
+    if(i%4===0 || (i===n-1 && (n-1)%4 >= 2)){
+      x.textAlign = i===n-1 ? 'right' : (i===0 ? 'left' : 'center');
+      x.fillText(hora(d.horas[i]), X(i), H-B+t*0.5);
+    }
+  }
+  // irradiancia: area + linea
+  var g = x.createLinearGradient(0, T, 0, H-B);
+  g.addColorStop(0, C_IRR+'55'); g.addColorStop(1, C_IRR+'00');
+  x.beginPath(); x.moveTo(X(0), YI(0));
+  for(i=0;i<n;i++) x.lineTo(X(i), YI(iv[i]));
+  x.lineTo(X(n-1), YI(0)); x.closePath(); x.fillStyle=g; x.fill();
+  x.beginPath(); for(i=0;i<n;i++){ if(i) x.lineTo(X(i),YI(iv[i])); else x.moveTo(X(i),YI(iv[i])); }
+  x.strokeStyle=C_IRR; x.lineWidth=Math.max(2,t*0.14); x.lineJoin='round'; x.stroke();
+  // precio encima, con borde oscuro para que se distinga al cruzarse
+  x.beginPath(); for(i=0;i<n;i++){ if(i) x.lineTo(X(i),YP(pv[i])); else x.moveTo(X(i),YP(pv[i])); }
+  x.lineJoin='round'; x.strokeStyle='#0d1117'; x.lineWidth=Math.max(5,t*0.36); x.stroke();
+  x.strokeStyle='#f5b301'; x.lineWidth=Math.max(2.5,t*0.18); x.stroke();
+  x.beginPath(); x.arc(X(n-1),YP(pv[n-1]),t*0.32,0,6.3); x.fillStyle='#f5b301'; x.fill();
+  // pico de irradiancia
+  var mx = Math.max.apply(null, iv), ip = iv.indexOf(mx);
+  if(mx > 0){
+    x.beginPath(); x.arc(X(ip), YI(mx), t*0.28, 0, 6.3); x.fillStyle=C_IRR; x.fill();
+    x.font='bold '+(t*0.9)+'px Roboto,Arial'; x.textBaseline='bottom';
+    x.textAlign = X(ip) > W*0.6 ? 'right' : 'left';
+    x.fillText(f(mx,0)+' W/m²', X(ip) + (x.textAlign==='left' ? t*0.5 : -t*0.5), YI(mx)-t*0.2);
+  }
+}
+
 // Curva del dia: pronostico (area azul escalonada) y tiempo real (linea naranja), en MW
 function curvaDia(x, x0, y0, W, H, cv, t){
   var pr = cv.pron || [], re = cv.real || [], todos = pr.concat(re);
@@ -514,6 +629,55 @@ function curvaDia(x, x0, y0, W, H, cv, t){
   }
 }
 
+// Trazo suave entre puntos (curva monotona: no inventa picos entre un dia y otro)
+function curvaSuave(x, px, py){
+  var n = px.length, m = [], d = [];
+  for(var i=0;i<n-1;i++) d.push((py[i+1]-py[i])/(px[i+1]-px[i]));
+  for(i=0;i<n;i++){
+    if(i===0) m.push(d[0]||0); else if(i===n-1) m.push(d[n-2]||0);
+    else m.push(d[i-1]*d[i] <= 0 ? 0 : 2/(1/d[i-1]+1/d[i]));
+  }
+  for(i=0;i<n-1;i++){
+    var h = (px[i+1]-px[i])/3;
+    x.bezierCurveTo(px[i]+h, py[i]+m[i]*h, px[i+1]-h, py[i+1]-m[i+1]*h, px[i+1], py[i+1]);
+  }
+}
+
+// Linea pequena: energia de los ultimos dias (un punto por dia, con su valor)
+function lineaDias(x, x0, y0, W, H, fechas, vals, color, t){
+  var n = vals.length; if(!n || H < t*4) return;
+  x.font = t+'px Roboto,Arial';
+  var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
+  var pad = Math.max((mx-mn)*0.35, mx*0.01); mn -= pad; mx += pad;
+  var L = x.measureText(f(mx,0)).width + t*0.8, R = t*0.6, T = t*2.6, B = t*1.9;
+  var ip = t*2.2;   // margen interno para que las etiquetas de los extremos no choquen con el eje
+  function X(i){ return x0 + L + ip + (W-L-R-2*ip) * (n>1 ? i/(n-1) : 0.5); }
+  function Y(v){ return y0 + T + (H-T-B) * (1-(v-mn)/(mx-mn)); }
+  x.textBaseline='middle'; x.textAlign='left'; x.fillStyle='#c9d1d9';
+  x.fillText('Demanda por día (GWh) · últimos '+n+' días publicados', x0+L, y0+t*0.7);
+  for(var k=0;k<=2;k++){
+    var v = mn + (mx-mn)*k/2, y = Y(v);
+    x.strokeStyle='#21262d'; x.lineWidth=1; x.beginPath(); x.moveTo(x0+L,y); x.lineTo(x0+W-R,y); x.stroke();
+    x.fillStyle='#8b949e'; x.textAlign='right'; x.fillText(f(v,0), x0+L-t*0.4, y);
+  }
+  var g = x.createLinearGradient(0, y0+T, 0, y0+H-B);
+  g.addColorStop(0, color+'44'); g.addColorStop(1, color+'00');
+  var px = [], py = [];
+  for(var i=0;i<n;i++){ px.push(X(i)); py.push(Y(vals[i])); }
+  x.beginPath(); x.moveTo(px[0], y0+H-B); x.lineTo(px[0], py[0]); curvaSuave(x, px, py);
+  x.lineTo(px[n-1], y0+H-B); x.closePath(); x.fillStyle=g; x.fill();
+  x.beginPath(); x.moveTo(px[0], py[0]); curvaSuave(x, px, py);
+  x.strokeStyle=color; x.lineWidth=Math.max(2,t*0.16); x.lineJoin='round'; x.stroke();
+  for(i=0;i<n;i++){
+    var px = X(i), py = Y(vals[i]), ult = (i===n-1);
+    x.beginPath(); x.arc(px, py, t*0.28, 0, 6.3); x.fillStyle=color; x.fill();
+    x.font=(ult?'bold ':'')+t+'px Roboto,Arial'; x.fillStyle='#e6edf3'; x.textAlign='center'; x.textBaseline='bottom';
+    x.fillText(f(vals[i],0), px, py-t*0.35);
+    x.font=t+'px Roboto,Arial'; x.fillStyle='#8b949e'; x.textBaseline='top';
+    x.fillText(dia(fechas[i]), px, y0+H-B+t*0.5);
+  }
+}
+
 // Barras verticales desde cero: energia de los ultimos dias
 function barrasDias(x, x0, y0, W, H, fechas, vals, color, t){
   var n = vals.length; if(!n || H < 40) return;
@@ -564,6 +728,42 @@ function barrasTec(x, x0, y0, W, H, tecs, t){
   }
 }
 
+// Curva solar del dia (MW hora a hora): la "campana" de la fotovoltaica
+function curvaSolar(x, x0, y0, W, H, mw, fecha, t){
+  if(!mw || !mw.length || H < t*5) return;
+  var mx = Math.max.apply(null, mw), ip = mw.indexOf(mx);
+  var e = escala(0, mx*1.08 || 1, 3);
+  x.font = t+'px Roboto,Arial';
+  var L = x.measureText(f(e.mx,0)).width + t*0.8, R = t*0.6, T = t*2.2, B = t*1.9;
+  function X(h){ return x0 + L + (W-L-R) * (h+0.5)/24; }
+  function Y(v){ return y0 + T + (H-T-B) * (1 - v/e.mx); }
+  x.textBaseline='middle'; x.textAlign='left'; x.fillStyle='#f5b301';
+  x.font='bold '+t+'px Roboto,Arial'; x.fillText('Solar hora a hora', x0+L, y0+t*0.7);
+  x.textAlign='right'; x.fillStyle='#8b949e'; x.font=t+'px Roboto,Arial';
+  x.fillText('MW · '+fecha.substr(0,5), x0+W-R, y0+t*0.7);
+  for(var v=0; v<=e.mx+e.paso/2; v+=e.paso){
+    var y = Y(v);
+    x.strokeStyle='#21262d'; x.lineWidth=1; x.beginPath(); x.moveTo(x0+L,y); x.lineTo(x0+W-R,y); x.stroke();
+    x.fillStyle='#8b949e'; x.textAlign='right'; x.fillText(f(v,0), x0+L-t*0.4, y);
+  }
+  x.textBaseline='top';
+  for(var h=0; h<24; h+=6){ x.textAlign='center'; x.fillText(h+'h', X(h), y0+H-B+t*0.5); }
+  x.textAlign='right'; x.fillText('23h', X(23), y0+H-B+t*0.5);
+  var g = x.createLinearGradient(0, y0+T, 0, y0+H-B);
+  g.addColorStop(0, '#f5b30199'); g.addColorStop(1, '#f5b30110');
+  x.beginPath(); x.moveTo(X(0), Y(0));
+  for(var i=0;i<mw.length;i++) x.lineTo(X(i), Y(mw[i]));
+  x.lineTo(X(mw.length-1), Y(0)); x.closePath(); x.fillStyle=g; x.fill();
+  x.beginPath(); for(i=0;i<mw.length;i++){ if(i) x.lineTo(X(i),Y(mw[i])); else x.moveTo(X(i),Y(mw[i])); }
+  x.strokeStyle='#f5b301'; x.lineWidth=Math.max(2,t*0.18); x.lineJoin='round'; x.stroke();
+  // pico del dia
+  var px = X(ip), py = Y(mx);
+  x.beginPath(); x.arc(px, py, t*0.32, 0, 6.3); x.fillStyle='#f5b301'; x.fill();
+  var txt = 'pico '+f(mx,0)+' MW a las '+ip+'h'; x.font='bold '+(t*0.9)+'px Roboto,Arial';
+  x.textAlign = px > x0+W*0.6 ? 'right' : 'left'; x.textBaseline='bottom'; x.fillStyle='#e6edf3';
+  x.fillText(txt, px + (x.textAlign==='left' ? t*0.6 : -t*0.6), py - t*0.2);
+}
+
 // Recuadro de embalses: nivel actual y su tendencia de 30 dias
 function embalsesEn(x, x0, y0, W, H, d, t){
   x.textBaseline='top'; x.textAlign='left';
@@ -581,6 +781,7 @@ function embalsesEn(x, x0, y0, W, H, d, t){
 
 // ---------- paginas ----------
 function poner(tit, valor, uni, sub, est){
+  $('extra').style.display = 'none';
   $('tit').innerHTML = tit; $('valor').innerHTML = valor; $('uni').innerHTML = uni; $('sub').innerHTML = sub;
   $('fila').style.display = valor === null ? 'none' : 'flex';
   $('sub').style.display = sub === null ? 'none' : 'block';
@@ -606,7 +807,12 @@ function mostrar(){
     if(!d){ poner('Precio de bolsa', '--', '', err.precio ? 'Sin datos de XM: '+err.precio : 'Consultando XM...', null); lienzo(); return; }
     poner('Precio de bolsa', f(d.ultimo,1), 'COP/kWh', 'Hora '+d.ultima_hora+' &middot; últimas 24 h publicadas',
       [['Promedio',f(d.promedio,1)],['Mínimo',f(d.minimo,1)],['Máximo',f(d.maximo,1)]]);
-    linea(d.valores, function(i){ return hora(d.horas[i]); }, 4, '#f5b301', 0);
+    var ir = D.irradiancia;
+    if(ir){
+      $('extra').innerHTML = '<b>'+f(ir.total_wh_m2,0)+'</b><i>Wh/m²</i><small>irradiación de hoy en Yopal</small>';
+      $('extra').style.display = 'block';
+    }
+    precioEIrradiancia(d, ir);
   } else if(p==='demanda'){
     mostrarDemanda();
   } else {
@@ -618,9 +824,9 @@ function mostrar(){
 function mostrarDemanda(){
   poner('Demanda del SIN', null, '', null, null);
   var L = lienzo(), x = L.x, W = L.W, H = L.H, t = fs(0.03), d = D.demanda;
-  var lado = W > H*1.5, gap = t*1.5;
-  var cw = lado ? W*0.72 : W, ch = lado ? H : H*0.7;
-  var bx = lado ? cw+gap : 0, by = lado ? 0 : ch+gap, bw = lado ? W-cw-gap : W, bh = lado ? H : H-ch-gap;
+  // curva de hoy grande arriba; la de los ultimos dias, baja, debajo
+  var gap = t*0.8, cw = W, ch = H*0.68;
+  var bx = 0, by = ch+gap, bw = W, bh = H-ch-gap;
   if(AHORA && AHORA.curva && (AHORA.curva.real.length || AHORA.curva.pron.length)){
     curvaDia(x, 0, 0, cw, ch, AHORA.curva, t);
   } else if(AHORA){
@@ -634,7 +840,7 @@ function mostrarDemanda(){
   }
   if(d){
     var k = Math.max(0, d.valores.length-5);
-    barrasDias(x, bx, by, bw, bh, d.fechas.slice(k), d.valores.slice(k), C_PRON, t*0.9);
+    lineaDias(x, bx, by, bw, bh, d.fechas.slice(k), d.valores.slice(k), C_PRON, t*0.85);
   } else {
     x.font=t+'px Roboto,Arial'; x.fillStyle='#8b949e'; x.textAlign='left'; x.textBaseline='top';
     x.fillText((D.errores||{}).demanda ? 'Demanda diaria: sin datos de XM' : 'Consultando XM...', bx, by+t);
@@ -652,13 +858,15 @@ function mostrarGeneracion(){
   }
   var L = lienzo(), x = L.x, W = L.W, H = L.H, t = fs(0.03);
   var lado = W > H*1.3, gap = t*2;
-  var nT = g ? g.tecnologias.length : 5;
-  var gw = lado ? W*0.56 : W, gh = lado ? H : Math.min(H*0.55, nT*t*2.5 + t);
-  var ex = lado ? gw+gap : 0, ey = lado ? 0 : gh+gap, ew = lado ? W-gw-gap : W, eh = lado ? H : H-gh-gap;
+  var hayCurva = g && g.solar_mw && g.solar_mw.length;
+  var gw = lado ? W*0.58 : W, colH = lado ? H : H*0.68;
+  var sh = hayCurva ? colH*0.5 : 0, by = hayCurva ? sh + t*0.8 : 0, bh = colH - by;
+  var ex = lado ? gw+gap : 0, ey = lado ? 0 : colH+gap, ew = lado ? W-gw-gap : W, eh = lado ? H : H-colH-gap;
   if(g){
+    if(hayCurva) curvaSolar(x, 0, 0, gw, sh, g.solar_mw, g.fecha, t*0.9);
     var tecs = g.tecnologias.slice().sort(function(a,b){
       return (b.nombre==='Solar') - (a.nombre==='Solar') || b.pct - a.pct; });
-    barrasTec(x, 0, 0, gw, gh, tecs, t);
+    barrasTec(x, 0, by, gw, bh, tecs, hayCurva ? t*0.85 : t);
   }
   if(e) embalsesEn(x, ex, ey, ew, eh, e, t);
 }

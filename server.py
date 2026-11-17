@@ -349,6 +349,9 @@ PAGINA = r"""<!DOCTYPE html>
   .st b{display:block;font-size:4.6vmin;color:#e6edf3}
   #cont{flex:1;position:relative;min-height:0}
   canvas{position:absolute;left:0;top:0;width:100%;height:100%}
+  #img{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;display:none;
+    filter:invert(.92) hue-rotate(180deg) saturate(1.3);border-radius:1vmin}
+  #nota{position:absolute;left:0;right:0;top:40%;text-align:center;color:#8b949e;font-size:3.4vmin;display:none}
   #barra{display:flex;border-top:1px solid #21262d}
   .tab{flex:1;padding:1.2vmin 1vmin 1.4vmin;text-align:center;border-top:.7vmin solid transparent;
     color:#6e7681;font-size:2.8vmin}
@@ -365,27 +368,28 @@ PAGINA = r"""<!DOCTYPE html>
     <div class="top"><span id="tit">Cargando</span><span id="meta"></span></div>
     <div class="fila"><span id="valor">--</span><span id="uni"></span><a id="tr"
       href="https://sinergox.xm.com.co/demand/real-demand/real-time-demand" target="_blank"
-      rel="noopener">&#9889; Ver en tiempo real</a></div>
+      rel="noopener">&#9889; Ver en XM</a></div>
     <div id="sub">Consultando XM...</div>
     <div class="stats" id="stats">
       <div class="st"><span id="l1"></span><b id="s1">--</b></div>
       <div class="st"><span id="l2"></span><b id="s2">--</b></div>
       <div class="st"><span id="l3"></span><b id="s3">--</b></div>
     </div>
-    <div id="cont"><canvas id="g"></canvas></div>
+    <div id="cont"><canvas id="g"></canvas><img id="img" alt="Grafica de demanda en tiempo real de XM"><div id="nota"></div></div>
   </div>
   <div id="barra">
     <div class="tab" data-i="0">Precio $/kWh<b id="t0">--</b></div>
     <div class="tab" data-i="1">Demanda GWh<b id="t1">--</b></div>
-    <div class="tab" data-i="2">Renovable<b id="t2">--</b></div>
-    <div class="tab" data-i="3">Embalses<b id="t3">--</b></div>
+    <div class="tab" data-i="2">Tiempo real<b id="t2">--</b></div>
+    <div class="tab" data-i="3">Renovable<b id="t3">--</b></div>
+    <div class="tab" data-i="4">Embalses<b id="t4">--</b></div>
   </div>
 </div>
 <div id="aviso">Toca para pantalla completa</div>
 <script>
 var D = {}, pagina = 0, pausaHasta = 0, ROTAR_SEG = 12;
-var PAGS = ['precio','demanda','generacion','embalses'];
-var mP = location.search.match(/p=(\d)/); if(mP) pagina = parseInt(mP[1],10) % 4;
+var PAGS = ['precio','demanda','ahora','generacion','embalses'];
+var mP = location.search.match(/p=(\d)/); if(mP) pagina = parseInt(mP[1],10) % PAGS.length;
 var COLORES = {'Hidráulica':'#3987e5','Térmica':'#d95926','Eólica':'#199e70','Solar':'#c98500',
                'Biomasa y cogen.':'#d55181','Otras':'#6e7681'};
 
@@ -478,8 +482,11 @@ function mostrar(){
   var tabs = document.querySelectorAll('.tab');
   for(var i=0;i<tabs.length;i++) tabs[i].className = 'tab' + (i===pagina ? ' on' : '');
   $('meta').innerHTML = 'XM &middot; ' + (D.consultado || '');
-  $('tr').style.display = (p==='demanda') ? 'inline-block' : 'none';
-  var TIT = {precio:'Precio de bolsa', demanda:'Demanda del SIN', generacion:'Generación por tecnología', embalses:'Nivel de embalses'};
+  $('tr').style.display = (p==='demanda' || p==='ahora') ? 'inline-block' : 'none';
+  var TIT = {precio:'Precio de bolsa', demanda:'Demanda del SIN', ahora:'Demanda en tiempo real',
+             generacion:'Generación por tecnología', embalses:'Nivel de embalses'};
+  $('img').style.display = 'none'; $('nota').style.display = 'none'; $('g').style.display = 'block';
+  if(p==='ahora'){ mostrarAhora(TIT[p]); return; }
   if(!d){
     poner(TIT[p], '--', '', err ? 'Sin datos de XM: '+err : 'Consultando XM...', null);
     lienzo(); return;
@@ -506,8 +513,40 @@ function mostrar(){
 function barraInferior(){
   $('t0').innerHTML = D.precio ? f(D.precio.ultimo,0) : '--';
   $('t1').innerHTML = D.demanda ? f(D.demanda.ultimo,0) : '--';
-  $('t2').innerHTML = D.generacion ? f(D.generacion.renovable_pct,0)+' %' : '--';
-  $('t3').innerHTML = D.embalses ? f(D.embalses.ultimo,0)+' %' : '--';
+  $('t2').innerHTML = AHORA ? AHORA.hora : '--';
+  $('t3').innerHTML = D.generacion ? f(D.generacion.renovable_pct,0)+' %' : '--';
+  $('t4').innerHTML = D.embalses ? f(D.embalses.ultimo,0)+' %' : '--';
+}
+
+// ---------- panel de tiempo real (captura de la pagina de XM) ----------
+var AHORA = null;
+function minutosDesde(iso){
+  var t = Date.parse(iso); if(isNaN(t)) return null;
+  return Math.max(0, Math.round((Date.now() - t) / 60000));
+}
+function mostrarAhora(tit){
+  lienzo(); $('g').style.display = 'none';
+  if(!AHORA){
+    poner(tit, '--', '', 'Disponible solo en la versión en la nube del tablero.', null);
+    $('nota').innerHTML = 'Toca &laquo;Ver en tiempo real&raquo; para abrir la página de XM.';
+    $('nota').style.display = 'block'; return;
+  }
+  var m = minutosDesde(AHORA.iso), hace = (m === null) ? '' : (m < 1 ? 'hace menos de 1 min' : 'hace ' + m + ' min');
+  var aviso = (m !== null && m > 30) ? ' &middot; <span style="color:#f85149">captura atrasada</span>' : '';
+  poner(tit, AHORA.hora, 'captura ' + hace, 'Imagen de la página de XM (Sinergox) &middot; se renueva cada 5 a 20 min' + aviso, null);
+  var img = $('img'), src = 'tr/demanda.png?v=' + encodeURIComponent(AHORA.iso);
+  if(img.getAttribute('src') !== src) img.setAttribute('src', src);
+  img.style.display = 'block';
+}
+function cargarAhora(){
+  var q = new XMLHttpRequest();
+  q.open('GET','tr/captura.json?t='+Date.now(),true);
+  q.onreadystatechange = function(){
+    if(q.readyState!==4) return;
+    if(q.status === 200){ try{ AHORA = JSON.parse(q.responseText); }catch(e){} }
+    barraInferior(); if(PAGS[pagina]==='ahora') mostrar();
+  };
+  q.send();
 }
 
 function ir(i, manual){
@@ -528,6 +567,8 @@ function cargar(){
 }
 window.onresize = mostrar;
 cargar(); setInterval(cargar, 5*60*1000);
+cargarAhora(); setInterval(cargarAhora, 60*1000);
+setInterval(function(){ if(PAGS[pagina]==='ahora') mostrar(); }, 30*1000);   // refresca "hace N min"
 
 // ---------- toques: pantalla completa, siguiente pagina, ir a un panel ----------
 function enPantallaCompleta(){

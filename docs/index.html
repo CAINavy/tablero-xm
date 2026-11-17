@@ -247,6 +247,7 @@ function curvaDia(x, x0, y0, W, H, cv, t){
     x.fillStyle='rgba(13,17,23,.85)'; rect(x, tx-t*0.3, ty-t*0.15, tw+t*0.6, t*1.3, t*0.3); x.fill();
     x.fillStyle='#e6edf3'; x.textAlign='left'; x.textBaseline='top'; x.fillText(txt, tx, ty);
   }
+  return {L: L, R: R};
 }
 
 // Trazo suave entre puntos (curva monotona: no inventa picos entre un dia y otro)
@@ -264,13 +265,14 @@ function curvaSuave(x, px, py){
 }
 
 // Linea pequena: energia de los ultimos dias (un punto por dia, con su valor)
-function lineaDias(x, x0, y0, W, H, fechas, vals, color, t){
+function lineaDias(x, x0, y0, W, H, fechas, vals, color, t, marco){
   var n = vals.length; if(!n || H < t*4) return;
   x.font = t+'px Roboto,Arial';
   var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
-  var pad = Math.max((mx-mn)*0.35, mx*0.01); mn -= pad; mx += pad;
-  var L = x.measureText(f(mx,0)).width + t*0.8, R = t*0.6, T = t*2.6, B = t*1.9;
-  var ip = t*2.2;   // margen interno para que las etiquetas de los extremos no choquen con el eje
+  var pad = Math.max((mx-mn)*0.15, mx*0.005); mn -= pad; mx += pad;
+  // mismos margenes que la curva de hoy, para que las dos graficas queden alineadas
+  var L = marco ? marco.L : x.measureText(f(mx,0)).width + t*0.8, R = marco ? marco.R : t*0.6, T = t*2.6, B = t*1.9;
+  var ip = t*1.6;   // margen interno para que las etiquetas de los extremos no choquen con el eje
   function X(i){ return x0 + L + ip + (W-L-R-2*ip) * (n>1 ? i/(n-1) : 0.5); }
   function Y(v){ return y0 + T + (H-T-B) * (1-(v-mn)/(mx-mn)); }
   x.textBaseline='middle'; x.textAlign='left'; x.fillStyle='#c9d1d9';
@@ -447,8 +449,9 @@ function mostrarDemanda(){
   // curva de hoy grande arriba; la de los ultimos dias, baja, debajo
   var gap = t*0.8, cw = W, ch = H*0.68;
   var bx = 0, by = ch+gap, bw = W, bh = H-ch-gap;
+  var marco = null;
   if(AHORA && AHORA.curva && (AHORA.curva.real.length || AHORA.curva.pron.length)){
-    curvaDia(x, 0, 0, cw, ch, AHORA.curva, t);
+    marco = curvaDia(x, 0, 0, cw, ch, AHORA.curva, t);
   } else if(AHORA){
     var img = $('img'), src = 'tr/demanda.png?v=' + encodeURIComponent(AHORA.iso);
     if(img.getAttribute('src') !== src) img.setAttribute('src', src);
@@ -460,7 +463,7 @@ function mostrarDemanda(){
   }
   if(d){
     var k = Math.max(0, d.valores.length-5);
-    lineaDias(x, bx, by, bw, bh, d.fechas.slice(k), d.valores.slice(k), C_PRON, t*0.85);
+    lineaDias(x, bx, by, bw, bh, d.fechas.slice(k), d.valores.slice(k), C_PRON, t*0.85, marco);
   } else {
     x.font=t+'px Roboto,Arial'; x.fillStyle='#8b949e'; x.textAlign='left'; x.textBaseline='top';
     x.fillText((D.errores||{}).demanda ? 'Demanda diaria: sin datos de XM' : 'Consultando XM...', bx, by+t);

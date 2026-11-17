@@ -15,31 +15,33 @@ def p(*a):
 
 def resumir(resp):
     items = resp.get("Items", []) or []
-    p("  Items:", len(items), "| fechas:", [i.get("Date", "")[:10] for i in items])
-    for i in items[-2:]:
-        for clave in ("HourlyEntities", "DailyEntities", "ListEntities"):
-            ents = i.get(clave)
-            if ents is not None:
-                p("  ", i.get("Date", "")[:10], clave, "entidades:", len(ents))
-                for e in ents[:3]:
+    p("  Items:", len(items))
+    sumas = {}
+    for i in items:
+        fecha = i.get("Date", "")[:10]
+        for clave in ("HourlyEntities", "DailyEntities"):
+            for e in i.get(clave) or []:
+                if "Value" in e:
+                    x = server.num(e.get("Value"))
+                else:
                     v = e.get("Values") or {}
-                    nums = [server.num(x) for k, x in v.items() if k.lower().startswith("hour")]
-                    nums = [x for x in nums if x is not None]
-                    p("     Id:", e.get("Id"), "| claves:", list(v.keys())[:6],
-                      "| horas con dato:", len(nums), "| suma:", round(sum(nums), 1) if nums else None,
-                      "| muestra:", json.dumps(v, ensure_ascii=False)[:160])
+                    xs = [server.num(x) for k, x in v.items() if k.lower().startswith("hour")]
+                    xs = [x for x in xs if x is not None]
+                    x = sum(xs) if xs else None
+                if x is not None:
+                    sumas[fecha] = sumas.get(fecha, 0) + x
+    for fecha in sorted(sumas):
+        p("   ", fecha, "total del dia:", round(sumas[fecha] / 1e6, 2), "millones")
 
 
 pruebas = [
-    ("hourly", "PrecBolsNaci", "Sistema", 10, 0),
+    ("daily", "DemaSIN", "Sistema", 10, 0),
     ("hourly", "DemaReal", "Sistema", 10, 0),
-    ("hourly", "DemaCome", "Sistema", 10, 0),
+    ("hourly", "DemaReal", "Sistema", 30, 26),
+    ("hourly", "DemaRealReg", "Sistema", 8, 4),
+    ("hourly", "DemaRealNoReg", "Sistema", 8, 4),
     ("hourly", "Gene", "Sistema", 10, 0),
-    ("hourly", "Gene", "Recurso", 8, 6),
-    ("daily", "VoluUtilDiarEner", "Sistema", 15, 0),
-    ("daily", "CapaUtilDiarEner", "Sistema", 15, 0),
-    ("daily", "PorcVoluUtilDiar", "Sistema", 15, 0),
-    ("lists", "ListadoRecursos", "Sistema", 1, 0),
+    ("daily", "PorcVoluUtilDiar", "Sistema", 6, 0),
 ]
 
 for tipo, metrica, entidad, desde, hasta in pruebas:
@@ -51,20 +53,6 @@ for tipo, metrica, entidad, desde, hasta in pruebas:
         resumir(r)
     except Exception as e:
         p("  ERROR:", e)
-
-p("=" * 70)
-p("Metricas relacionadas en ListadoMetricas:")
-try:
-    filas = server.listas(server.consultar("lists", "ListadoMetricas"))
-    p("  total metricas:", len(filas), "| campos:", list(filas[0].keys()) if filas else None)
-    claves = ("dema", "gene", "volu", "capa", "embal", "porc", "precbols")
-    for f in filas:
-        a = server.minus(f)
-        if any(k in str(a.get("metricid", "")).lower() for k in claves):
-            p("  ", a.get("metricid"), "|", a.get("entity"), "|", a.get("type"), "|",
-              a.get("metricunits"), "|", a.get("maxdays"), "|", a.get("metricname"))
-except Exception as e:
-    p("  ERROR:", e)
 
 texto = "\n".join(salida)
 print(texto)

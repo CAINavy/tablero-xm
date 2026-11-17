@@ -231,17 +231,27 @@ def panel_generacion(hoy):
             "tecnologias": tecs}
 
 
+def diarios_por_tramos(metrica, ini, fin, entidad="Sistema"):
+    """La API de XM entrega maximo 31 dias por consulta: se pide por tramos de 30 dias."""
+    salida = []
+    while ini <= fin:
+        tope = min(ini + timedelta(days=29), fin)
+        salida += diarios(consultar("daily", metrica, entidad, ini, tope))
+        ini = tope + timedelta(days=1)
+    return sorted(dict(salida).items())
+
+
 def panel_embalses(hoy):
-    ini = hoy - timedelta(days=36)
+    ini = hoy - timedelta(days=40)
     serie = []
     try:
-        vol = dict(diarios(consultar("daily", M_VOLUMEN, "Sistema", ini, hoy)))
-        cap = dict(diarios(consultar("daily", M_CAPACIDAD, "Sistema", ini, hoy)))
+        vol = dict(diarios_por_tramos(M_VOLUMEN, ini, hoy))
+        cap = dict(diarios_por_tramos(M_CAPACIDAD, ini, hoy))
         serie = [(d, 100.0 * vol[d] / cap[d]) for d in sorted(vol) if cap.get(d)]
     except Exception:
         serie = []
     if not serie:   # respaldo: porcentaje directo
-        serie = diarios(consultar("daily", M_PORC_EMBALSE, "Sistema", ini, hoy))
+        serie = diarios_por_tramos(M_PORC_EMBALSE, ini, hoy)
         if serie and max(v for _, v in serie) <= 1.5:
             serie = [(d, v * 100.0) for d, v in serie]
     if not serie:

@@ -44,6 +44,9 @@ def capturar():
         pagina = navegador.new_page(viewport={"width": 1500, "height": 1000},
                                     device_scale_factor=1.5, locale="es-CO",
                                     timezone_id="America/Bogota", bypass_csp=True)
+        # Guardar las respuestas de Power BI con los datos de la grafica
+        respuestas = []
+        pagina.on("response", lambda r: respuestas.append(r) if "querydata" in r.url.lower() else None)
         pagina.goto(URL_XM, wait_until="domcontentloaded", timeout=90000)
 
         # Rechazar cookies opcionales si aparece el aviso
@@ -119,6 +122,15 @@ def capturar():
             print("Recorte:", {k: round(v) for k, v in recorte.items()})
         else:
             marco.screenshot(path=IMAGEN, timeout=60000)
+        consultas = []
+        for r in respuestas:
+            try:
+                consultas.append(r.json())
+            except Exception as e:
+                consultas.append({"error": str(e)[:200]})
+        with open(os.path.join(CARPETA, "consultas.json"), "w", encoding="utf-8") as f:
+            json.dump(consultas, f, ensure_ascii=False)
+        print("Respuestas de Power BI guardadas:", len(consultas))
         navegador.close()
 
     if os.path.getsize(IMAGEN) < 20000:

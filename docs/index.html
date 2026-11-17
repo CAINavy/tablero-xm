@@ -47,7 +47,7 @@
   </div>
   <div id="barra">
     <div class="tab" data-i="0">Precio $/kWh<b id="t0">--</b></div>
-    <div class="tab" data-i="1">Demanda MW<b id="t1">--</b></div>
+    <div class="tab" data-i="1">Demanda GWh<b id="t1">--</b></div>
     <div class="tab" data-i="2">Renovable<b id="t2">--</b></div>
     <div class="tab" data-i="3">Embalses<b id="t3">--</b></div>
   </div>
@@ -93,7 +93,10 @@ function linea(vals, etiqueta, cadaN, color, dec){
   }
   x.textAlign='center'; x.textBaseline='top';
   for(var i=0;i<n;i++){
-    if(i%cadaN===0 || (i===n-1 && (n-1)%cadaN >= cadaN/2)) x.fillText(etiqueta(i), X(i), H-B+t*0.5);
+    if(i%cadaN===0 || (i===n-1 && (n-1)%cadaN >= cadaN/2)){
+      x.textAlign = (i===n-1 && i>0) ? 'right' : (i===0 ? 'left' : 'center');
+      x.fillText(etiqueta(i), i===n-1 && i>0 ? W : X(i), H-B+t*0.5);
+    }
   }
   var g = x.createLinearGradient(0,T,0,H-B);
   g.addColorStop(0, color+'55'); g.addColorStop(1, color+'00');
@@ -156,9 +159,9 @@ function mostrar(){
       [['Promedio',f(d.promedio,1)],['Mínimo',f(d.minimo,1)],['Máximo',f(d.maximo,1)]]);
     linea(d.valores, function(i){ return hora(d.horas[i]); }, 4, '#f5b301', 0);
   } else if(p==='demanda'){
-    poner(TIT[p], f(d.ultimo,0), 'MW', 'Hora '+d.ultima_hora+' &middot; últimas 24 h publicadas',
-      [['Energía 24 h',f(d.total_gwh,1)+' GWh'],['Mínimo',f(d.minimo,0)+' MW'],['Pico',f(d.maximo,0)+' MW']]);
-    linea(d.valores, function(i){ return hora(d.horas[i]); }, 4, '#3987e5', 0);
+    poner(TIT[p], f(d.ultimo,1), 'GWh/día', 'Día '+d.fecha+' &middot; últimos 30 días',
+      [['Promedio',f(d.promedio,1)+' GWh'],['Mínimo',f(d.minimo,1)+' GWh'],['Máximo',f(d.maximo,1)+' GWh']]);
+    linea(d.valores, function(i){ return dia(d.fechas[i]); }, 7, '#3987e5', 0);
   } else if(p==='generacion'){
     poner(TIT[p], f(d.renovable_pct,1), '% renovable', 'Día '+d.fecha+' &middot; total '+f(d.total_gwh,1)+' GWh', null);
     barras(d.tecnologias);

@@ -576,7 +576,7 @@ function embalsesEn(x, x0, y0, W, H, d, t){
     x.font=t+'px Roboto,Arial'; x.fillStyle='#8b949e';
     x.fillText((dif>=0?'+':'')+f(dif,1)+' pts en 30 días', x0+w+t*0.8, y0+t*2.2);
   }
-  lineaEn(x, x0, y0+t*4.2, W, H-t*4.2, d.valores, function(i){ return dia(d.fechas[i]); }, 7, C_EMB, 0, t*0.85);
+  lineaEn(x, x0, y0+t*4.2, W, H-t*4.2, d.valores, function(i){ return dia(d.fechas[i]); }, 7, C_EMB, 1, t*0.85);
 }
 
 // ---------- paginas ----------

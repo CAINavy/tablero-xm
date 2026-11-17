@@ -69,20 +69,28 @@ def extraer_curva(consultas):
             sel = datos["descriptor"]["Select"]
         except Exception:
             continue
-        fecha = next((s["Value"] for s in sel if s.get("Kind") == 1 and "fecha" in s.get("Name", "").lower()), None)
+        grupos = [s for s in sel if s.get("Kind") == 1]
+        fecha = next((s["Value"] for s in grupos if any(k in s.get("Name", "").lower() for k in ("fecha", "hora", "time"))),
+                     grupos[0]["Value"] if grupos else None)
         medidas = [s for s in sel if s.get("Kind") == 2]
-        real = next((s["Value"] for s in medidas if "valordemanda" in s.get("Name", "").lower()), None)
-        pron = next((s["Value"] for s in medidas if s["Value"] != real), None)
+        real = next((s["Value"] for s in medidas if any(k in s.get("Name", "").lower() for k in ("valordemanda", "real"))),
+                    medidas[0]["Value"] if medidas else None)
+        pron = next((s["Value"] for s in medidas if s["Value"] != real and "pron" in s.get("Name", "").lower()),
+                    next((s["Value"] for s in medidas if s["Value"] != real), None))
         if not (fecha and real and pron):
             continue
         curva = {"pron": [], "real": []}
         for fila in decodificar_dsr(datos["dsr"]):
             t = fila.get(fecha)
-            if not isinstance(t, (int, float)):
+            if isinstance(t, (int, float)):
+                # Power BI entrega la hora local de Colombia escrita como si fuera UTC
+                h = datetime.fromtimestamp(t / 1000, timezone.utc)
+                minuto = round(h.hour * 60 + h.minute + h.second / 60.0, 1)
+            elif isinstance(t, str) and re.search(r"\d{1,2}:\d{2}", t):
+                hh, mm = re.search(r"(\d{1,2}):(\d{2})", t).groups()
+                minuto = int(hh) * 60 + int(mm)
+            else:
                 continue
-            # Power BI entrega la hora local de Colombia escrita como si fuera UTC
-            h = datetime.fromtimestamp(t / 1000, timezone.utc)
-            minuto = round(h.hour * 60 + h.minute + h.second / 60.0, 1)
             for clave, campo in (("pron", pron), ("real", real)):
                 v = fila.get(campo)
                 if isinstance(v, (int, float)):
@@ -194,6 +202,15 @@ def capturar():
             curva = extraer_curva(consultas)
         except Exception as e:
             print("Aviso: no se pudieron leer los datos de la grafica (%s)" % str(e)[:80])
+        if not curva:   # diagnostico para ajustar la lectura si Power BI cambia
+            print("Diagnostico Power BI: %d respuestas querydata, %d legibles" % (len(respuestas), len(consultas)))
+            for c in consultas[:8]:
+                try:
+                    datos = c["results"][0]["result"]["data"]
+                    print("  Select:", [(s.get("Kind"), s.get("Name"), s.get("Value")) for s in datos["descriptor"]["Select"]])
+                    print("  DSR:", json.dumps(datos["dsr"], ensure_ascii=False)[:300])
+                except Exception as e:
+                    print("  sin formato esperado:", str(e)[:60], json.dumps(c, ensure_ascii=False)[:200])
         navegador.close()
 
     if os.path.getsize(IMAGEN) < 20000:

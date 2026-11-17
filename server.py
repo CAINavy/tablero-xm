@@ -259,11 +259,11 @@ def leer_irradiancia(texto_html, hoy):
         bloque = texto[m.end(): dias[i + 1].start() if i + 1 < len(dias) else len(texto)]
         horas = [0.0] * 24
         n = 0
-        for h, v in re.findall(r"(\d{1,2}):00 ?(\d+(?:[.,]\d+)?) ?w/m2", bloque, re.I):
+        for h, v in re.findall(r"(\d{1,2}):00 ?(\d+(?:[.,]\d+)?) ?w/m ?2", bloque, re.I):
             if 0 <= int(h) < 24:
                 horas[int(h)] = float(v.replace(",", "."))
                 n += 1
-        total = re.search(r"(\d+(?:[.,]\d+)?) ?wh/m2", bloque, re.I)
+        total = re.search(r"(\d+(?:[.,]\d+)?) ?wh/m ?2", bloque, re.I)
         sol = re.search(r"(\d{1,2}:\d{2}) ?(\d{1,2}:\d{2})", bloque)
         if n >= 6:
             return {"fecha": hoy.strftime("%d/%m/%Y"), "w_m2": horas,

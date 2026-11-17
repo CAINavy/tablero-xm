@@ -38,9 +38,11 @@ def capturar():
             navegador = p.chromium.launch(channel="chrome", args=["--no-sandbox"])
         except Exception:
             navegador = p.chromium.launch(args=["--no-sandbox"])
+        # bypass_csp: la pagina de XM prohibe estilos insertados; esto solo
+        # afecta a nuestro navegador temporal y permite ocultar avisos.
         pagina = navegador.new_page(viewport={"width": 1500, "height": 1000},
                                     device_scale_factor=1.5, locale="es-CO",
-                                    timezone_id="America/Bogota")
+                                    timezone_id="America/Bogota", bypass_csp=True)
         pagina.goto(URL_XM, wait_until="domcontentloaded", timeout=90000)
 
         # Rechazar cookies opcionales si aparece el aviso
@@ -48,7 +50,10 @@ def capturar():
             pagina.get_by_role("button", name="Rechazar").click(timeout=8000)
         except Exception:
             pass
-        pagina.add_style_tag(content=CSS_LIMPIEZA)
+        try:
+            pagina.add_style_tag(content=CSS_LIMPIEZA)
+        except Exception as e:
+            print("Aviso: no se pudo ocultar avisos (%s)" % str(e)[:80])
 
         marco = pagina.locator('iframe[src*="powerbi"]').first
         marco.wait_for(state="attached", timeout=90000)

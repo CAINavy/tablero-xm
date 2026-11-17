@@ -11,6 +11,7 @@ para que el panel no quede vacio.
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -76,12 +77,53 @@ def capturar():
         }""")
         time.sleep(1)
 
+        # Hora del dato que muestra XM (titulo "Demanda en tiempo real ... 02:30:09")
+        frame = next((f for f in pagina.frames if "powerbi" in (f.url or "")), None)
+        dato = None
+        recorte = None
+        if frame is not None:
+            try:
+                texto = frame.evaluate("() => document.body.innerText || ''")
+                m = re.search(r"tiempo real[^\n]*?(\d{1,2}:\d{2})(:\d{2})?", texto, re.I)
+                if m:
+                    dato = m.group(1).zfill(5)
+            except Exception as e:
+                print("Aviso: no se leyo la hora del dato (%s)" % str(e)[:80])
+            # Recortar el espacio vacio: union de los visuales de Power BI
+            try:
+                caja = frame.evaluate("""() => {
+                    const els = document.querySelectorAll('visual-container, visual-container-modern, .visualContainer, .visual-container');
+                    let x0=1e9, y0=1e9, x1=-1, y1=-1;
+                    for (const el of els) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 20 || r.height < 20) continue;
+                        x0 = Math.min(x0, r.left); y0 = Math.min(y0, r.top);
+                        x1 = Math.max(x1, r.right); y1 = Math.max(y1, r.bottom);
+                    }
+                    return x1 < 0 ? null : {x: x0, y: y0, w: x1 - x0, h: y1 - y0};
+                }""")
+                bi = marco.bounding_box()
+                if caja and bi and caja["w"] * caja["h"] > 0.15 * bi["width"] * bi["height"]:
+                    pad = 10
+                    x = max(bi["x"], bi["x"] + caja["x"] - pad)
+                    y = max(bi["y"], bi["y"] + caja["y"] - pad)
+                    recorte = {"x": x, "y": y,
+                               "width": min(bi["x"] + bi["width"], bi["x"] + caja["x"] + caja["w"] + pad) - x,
+                               "height": min(bi["y"] + bi["height"], bi["y"] + caja["y"] + caja["h"] + pad) - y}
+            except Exception as e:
+                print("Aviso: sin recorte (%s)" % str(e)[:80])
+
         os.makedirs(CARPETA, exist_ok=True)
-        marco.screenshot(path=IMAGEN, timeout=60000)
+        if recorte:
+            pagina.screenshot(path=IMAGEN, clip=recorte, timeout=60000)
+            print("Recorte:", {k: round(v) for k, v in recorte.items()})
+        else:
+            marco.screenshot(path=IMAGEN, timeout=60000)
         navegador.close()
 
     if os.path.getsize(IMAGEN) < 20000:
         raise RuntimeError("la captura salio casi vacia (%d bytes)" % os.path.getsize(IMAGEN))
+    return dato
 
 
 def conservar_anterior():
@@ -99,11 +141,11 @@ def conservar_anterior():
 def main():
     ahora = datetime.now(TZ_CO)
     try:
-        capturar()
+        dato = capturar()
         with open(INFO, "w", encoding="utf-8") as f:
             json.dump({"hora": ahora.strftime("%H:%M"), "fecha": ahora.strftime("%d/%m/%Y"),
-                       "iso": ahora.isoformat(timespec="seconds"), "ok": True}, f)
-        print("[OK] Captura guardada:", IMAGEN, os.path.getsize(IMAGEN), "bytes")
+                       "iso": ahora.isoformat(timespec="seconds"), "dato": dato, "ok": True}, f)
+        print("[OK] Captura guardada:", IMAGEN, os.path.getsize(IMAGEN), "bytes | dato XM:", dato)
     except Exception as e:
         print("[ERROR] Captura fallida:", e)
         conservar_anterior()

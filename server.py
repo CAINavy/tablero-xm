@@ -355,13 +355,17 @@ PAGINA = r"""<!DOCTYPE html>
   .tab b{display:block;font-size:4.2vmin;color:#8b949e;white-space:nowrap}
   .tab.on{border-top-color:#f5b301;background:#161b22;color:#c9d1d9}
   .tab.on b{color:#e6edf3}
+  #tr{display:none;font-size:3.4vmin;color:#f5b301;border:1px solid #f5b301;border-radius:3vmin;
+    padding:1vmin 2.4vmin;text-decoration:none;margin-left:auto;align-self:center;white-space:nowrap}
   #aviso{position:fixed;right:2vmin;top:2vmin;font-size:2.8vmin;color:#0d1117;background:#f5b301;
     padding:.6vmin 1.4vmin;border-radius:1vmin}
 </style></head>
 <body><div id="app">
   <div id="main">
     <div class="top"><span id="tit">Cargando</span><span id="meta"></span></div>
-    <div class="fila"><span id="valor">--</span><span id="uni"></span></div>
+    <div class="fila"><span id="valor">--</span><span id="uni"></span><a id="tr"
+      href="https://sinergox.xm.com.co/demand/real-demand/real-time-demand" target="_blank"
+      rel="noopener">&#9889; Ver en tiempo real</a></div>
     <div id="sub">Consultando XM...</div>
     <div class="stats" id="stats">
       <div class="st"><span id="l1"></span><b id="s1">--</b></div>
@@ -474,6 +478,7 @@ function mostrar(){
   var tabs = document.querySelectorAll('.tab');
   for(var i=0;i<tabs.length;i++) tabs[i].className = 'tab' + (i===pagina ? ' on' : '');
   $('meta').innerHTML = 'XM &middot; ' + (D.consultado || '');
+  $('tr').style.display = (p==='demanda') ? 'inline-block' : 'none';
   var TIT = {precio:'Precio de bolsa', demanda:'Demanda del SIN', generacion:'Generación por tecnología', embalses:'Nivel de embalses'};
   if(!d){
     poner(TIT[p], '--', '', err ? 'Sin datos de XM: '+err : 'Consultando XM...', null);
@@ -531,6 +536,9 @@ function enPantallaCompleta(){
 }
 function actualizarAviso(){ $('aviso').style.display = enPantallaCompleta() ? 'none' : 'block'; }
 document.addEventListener('click', function(ev){
+  for(var a = ev.target; a && a !== document.body; a = a.parentNode){
+    if(a.tagName === 'A'){ pausaHasta = Date.now() + 60000; return; }   // enlaces: dejar que abran
+  }
   pedirWakeLock();
   if(!enPantallaCompleta()){
     var el = document.documentElement, fn = el.requestFullscreen || el.webkitRequestFullscreen;

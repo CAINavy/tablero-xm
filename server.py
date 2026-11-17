@@ -11,7 +11,7 @@ Pensado para un celular Android viejo con Termux.
 
 Paneles:
   1. Precio de Bolsa Nacional   (PrecBolsNaci, horario, COP/kWh)
-  2. Demanda del SIN            (DemaReal, horario, kWh -> MW)
+  2. Demanda del SIN            (DemaSIN, diario, kWh -> GWh/dia)
   3. Generacion por tecnologia  (Gene por Recurso + ListadoRecursos)
   4. Nivel de embalses          (VoluUtilDiarEner / CapaUtilDiarEner, diario)
 """
@@ -33,7 +33,8 @@ TZ_CO = timezone(timedelta(hours=-5))
 
 # Metricas de XM (si alguna cambia de nombre, usa --metricas para buscarla)
 M_PRECIO = "PrecBolsNaci"
-M_DEMANDA = ["DemaReal", "DemaCome"]          # se usa la primera que responda
+M_DEMANDA_DIA = "DemaSIN"                    # demanda de energia del SIN, diaria
+M_DEMANDA_HORA = "DemaReal"                  # respaldo
 M_GENERACION = "Gene"
 M_VOLUMEN = "VoluUtilDiarEner"
 M_CAPACIDAD = "CapaUtilDiarEner"
@@ -99,7 +100,10 @@ def diarios(resp):
     for item in resp.get("Items", []) or []:
         fecha = datetime.strptime(item["Date"][:10], "%Y-%m-%d").date()
         for ent in item.get("DailyEntities", []) or []:
-            x = num(minus(ent.get("Values")).get("value"))
+            if "Value" in ent:
+                x = num(ent.get("Value"))
+            else:
+                x = num(minus(ent.get("Values")).get("value"))
             if x is not None:
                 salida.append((fecha, x))
     salida.sort()
@@ -121,9 +125,29 @@ def serie_sistema(resp):
     return max(datos.values(), key=len)
 
 
+def quitar_dias_incompletos(serie, umbral=0.8):
+    """XM publica primero datos parciales de los ultimos dias: se descartan al final de la serie
+    los dias cuyo total es menor que el 80 % de la mediana de los demas."""
+    serie = list(serie)
+    if len(serie) < 3:
+        return serie
+    valores = sorted(v for _, v in serie)
+    mediana = valores[len(valores) // 2]
+    while serie and serie[-1][1] < umbral * mediana:
+        serie.pop()
+    return serie
+
+
+def totales_por_dia(puntos):
+    dias = {}
+    for t, x in puntos:
+        dias[t.date()] = dias.get(t.date(), 0.0) + x
+    return sorted(dias.items())
+
+
 # ---------------------------------------------------------------- Paneles
 def panel_precio(hoy):
-    pts = serie_sistema(consultar("hourly", M_PRECIO, "Sistema", hoy - timedelta(days=4), hoy))
+    pts = serie_sistema(consultar("hourly", M_PRECIO, "Sistema", hoy - timedelta(days=7), hoy))
     if not pts:
         raise RuntimeError("XM no devolvio precios")
     u = pts[-24:]
@@ -134,21 +158,21 @@ def panel_precio(hoy):
 
 
 def panel_demanda(hoy):
-    ultimo_error = None
-    for metrica in M_DEMANDA:
-        try:
-            pts = serie_sistema(consultar("hourly", metrica, "Sistema", hoy - timedelta(days=4), hoy))
-        except Exception as e:
-            ultimo_error = e
-            continue
-        if pts:
-            u = pts[-24:]
-            mw = [x / 1000.0 for _, x in u]          # kWh en una hora -> MW promedio
-            return {"horas": [t.strftime("%Y-%m-%d %H") for t, _ in u], "valores": mw,
-                    "ultimo": mw[-1], "ultima_hora": u[-1][0].strftime("%d/%m %H:00"),
-                    "total_gwh": sum(mw) / 1000.0, "minimo": min(mw), "maximo": max(mw),
-                    "metrica": metrica}
-    raise RuntimeError("XM no devolvio demanda (%s)" % (ultimo_error or "sin datos"))
+    """Demanda de energia del SIN, diaria (GWh/dia), ultimos 30 dias completos."""
+    ini = hoy - timedelta(days=31)
+    serie = diarios(consultar("daily", M_DEMANDA_DIA, "Sistema", ini, hoy))
+    metrica = M_DEMANDA_DIA
+    if not serie:   # respaldo: suma diaria de la demanda real horaria
+        serie = totales_por_dia(serie_sistema(consultar("hourly", M_DEMANDA_HORA, "Sistema", ini, hoy)))
+        metrica = M_DEMANDA_HORA
+    serie = quitar_dias_incompletos(serie)
+    if not serie:
+        raise RuntimeError("XM no devolvio demanda")
+    gwh = [v / 1e6 for _, v in serie]
+    return {"fechas": [d.strftime("%Y-%m-%d") for d, _ in serie], "valores": gwh,
+            "ultimo": gwh[-1], "fecha": serie[-1][0].strftime("%d/%m/%Y"),
+            "promedio": sum(gwh) / len(gwh), "minimo": min(gwh), "maximo": max(gwh),
+            "metrica": metrica}
 
 
 def clasificar(attrs):
@@ -184,21 +208,19 @@ def mapa_recursos(hoy):
 
 def panel_generacion(hoy):
     mapa = mapa_recursos(hoy)
-    por_recurso = horarios(consultar("hourly", M_GENERACION, "Recurso", hoy - timedelta(days=3), hoy))
-    if not por_recurso:
+    # 1) El total del sistema (consulta liviana) dice cual es el ultimo dia completo
+    dias = quitar_dias_incompletos(totales_por_dia(
+        serie_sistema(consultar("hourly", M_GENERACION, "Sistema", hoy - timedelta(days=8), hoy))))
+    if not dias:
         raise RuntimeError("XM no devolvio generacion")
-    # total por dia, para elegir el ultimo dia completo publicado
-    por_dia = {}
-    for cod, pts in por_recurso.items():
-        for t, x in pts:
-            por_dia.setdefault(t.date(), {}).setdefault(cod, 0.0)
-            por_dia[t.date()][cod] += x
-    totales = {d: sum(v.values()) for d, v in por_dia.items()}
-    tope = max(totales.values())
-    dia = max(d for d, tot in totales.items() if tot >= 0.8 * tope)
+    dia = dias[-1][0]
+    # 2) Solo para ese dia se descarga el detalle por planta
+    por_recurso = horarios(consultar("hourly", M_GENERACION, "Recurso", dia, dia))
+    if not por_recurso:
+        raise RuntimeError("XM no devolvio generacion por planta")
     suma = dict((t, 0.0) for t in TECNOLOGIAS)
-    for cod, kwh in por_dia[dia].items():
-        suma[mapa.get(cod, "Otras")] += kwh
+    for cod, pts in por_recurso.items():
+        suma[mapa.get(cod, "Otras")] += sum(x for t, x in pts if t.date() == dia)
     total = sum(suma.values())
     if total <= 0:
         raise RuntimeError("generacion en cero")
@@ -261,7 +283,7 @@ def resumen(nombre, d):
     if nombre == "precio":
         return "%.1f COP/kWh (%s)" % (d["ultimo"], d["ultima_hora"])
     if nombre == "demanda":
-        return "%.0f MW (%s) [%s]" % (d["ultimo"], d["ultima_hora"], d["metrica"])
+        return "%.1f GWh (%s) [%s]" % (d["ultimo"], d["fecha"], d["metrica"])
     if nombre == "generacion":
         return "%.1f GWh %s | " % (d["total_gwh"], d["fecha"]) + ", ".join(
             "%s %.0f%%" % (t["nombre"], t["pct"]) for t in d["tecnologias"])
@@ -338,7 +360,7 @@ PAGINA = r"""<!DOCTYPE html>
   </div>
   <div id="barra">
     <div class="tab" data-i="0">Precio $/kWh<b id="t0">--</b></div>
-    <div class="tab" data-i="1">Demanda MW<b id="t1">--</b></div>
+    <div class="tab" data-i="1">Demanda GWh<b id="t1">--</b></div>
     <div class="tab" data-i="2">Renovable<b id="t2">--</b></div>
     <div class="tab" data-i="3">Embalses<b id="t3">--</b></div>
   </div>
@@ -384,7 +406,10 @@ function linea(vals, etiqueta, cadaN, color, dec){
   }
   x.textAlign='center'; x.textBaseline='top';
   for(var i=0;i<n;i++){
-    if(i%cadaN===0 || (i===n-1 && (n-1)%cadaN >= cadaN/2)) x.fillText(etiqueta(i), X(i), H-B+t*0.5);
+    if(i%cadaN===0 || (i===n-1 && (n-1)%cadaN >= cadaN/2)){
+      x.textAlign = (i===n-1 && i>0) ? 'right' : (i===0 ? 'left' : 'center');
+      x.fillText(etiqueta(i), i===n-1 && i>0 ? W : X(i), H-B+t*0.5);
+    }
   }
   var g = x.createLinearGradient(0,T,0,H-B);
   g.addColorStop(0, color+'55'); g.addColorStop(1, color+'00');
@@ -447,9 +472,9 @@ function mostrar(){
       [['Promedio',f(d.promedio,1)],['Mínimo',f(d.minimo,1)],['Máximo',f(d.maximo,1)]]);
     linea(d.valores, function(i){ return hora(d.horas[i]); }, 4, '#f5b301', 0);
   } else if(p==='demanda'){
-    poner(TIT[p], f(d.ultimo,0), 'MW', 'Hora '+d.ultima_hora+' &middot; últimas 24 h publicadas',
-      [['Energía 24 h',f(d.total_gwh,1)+' GWh'],['Mínimo',f(d.minimo,0)+' MW'],['Pico',f(d.maximo,0)+' MW']]);
-    linea(d.valores, function(i){ return hora(d.horas[i]); }, 4, '#3987e5', 0);
+    poner(TIT[p], f(d.ultimo,1), 'GWh/día', 'Día '+d.fecha+' &middot; últimos 30 días',
+      [['Promedio',f(d.promedio,1)+' GWh'],['Mínimo',f(d.minimo,1)+' GWh'],['Máximo',f(d.maximo,1)+' GWh']]);
+    linea(d.valores, function(i){ return dia(d.fechas[i]); }, 7, '#3987e5', 0);
   } else if(p==='generacion'){
     poner(TIT[p], f(d.renovable_pct,1), '% renovable', 'Día '+d.fecha+' &middot; total '+f(d.total_gwh,1)+' GWh', null);
     barras(d.tecnologias);

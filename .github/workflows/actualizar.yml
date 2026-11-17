@@ -1,0 +1,53 @@
+name: Actualizar tablero XM
+
+on:
+  schedule:
+    - cron: "17 * * * *"     # cada hora, en el minuto 17 (evita la congestion de la hora en punto)
+  workflow_dispatch:          # permite ejecutarlo a mano con el boton "Run workflow"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: tablero-xm
+  cancel-in-progress: false
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.publicar.outputs.page_url }}
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Consultar XM y generar la pagina
+        run: python actualizar.py
+
+      - name: Guardar los datos en el repositorio
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs
+          git diff --staged --quiet || git commit -m "Datos XM $(date -u +'%Y-%m-%d %H:%M') UTC"
+          git push
+
+      - name: Preparar GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Subir la pagina
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Publicar
+        id: publicar
+        uses: actions/deploy-pages@v4

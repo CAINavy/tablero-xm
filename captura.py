@@ -31,6 +31,67 @@ CSS_LIMPIEZA = """
 """
 
 
+def decodificar_dsr(dsr):
+    """Convierte el formato comprimido de Power BI (DSR) en una lista de filas {campo: valor}.
+    En cada fila, "R" marca campos que repiten el valor anterior y "\u00d8" campos vacios."""
+    filas = []
+    for ds in dsr.get("DS", []):
+        for ph in ds.get("PH", []):
+            for clave, lista in ph.items():
+                if not clave.startswith("DM"):
+                    continue
+                campos, previa = None, {}
+                for fila in lista:
+                    if "S" in fila:
+                        campos = [c["N"] for c in fila["S"]]
+                    if not campos:
+                        continue
+                    rep, nul = fila.get("R", 0), fila.get("\u00d8", 0)
+                    vals, actual = list(fila.get("C", [])), {}
+                    for i, nom in enumerate(campos):
+                        if rep >> i & 1:
+                            actual[nom] = previa.get(nom)
+                        elif nul >> i & 1:
+                            actual[nom] = None
+                        else:
+                            actual[nom] = vals.pop(0) if vals else None
+                    filas.append(actual)
+                    previa = actual
+    return filas
+
+
+def extraer_curva(consultas):
+    """Busca la consulta con la fecha y los dos valores (pronostico y tiempo real).
+    Devuelve {"pron": [[minuto, MW], ...], "real": [[minuto, MW], ...]} o None."""
+    for c in consultas:
+        try:
+            datos = c["results"][0]["result"]["data"]
+            sel = datos["descriptor"]["Select"]
+        except Exception:
+            continue
+        fecha = next((s["Value"] for s in sel if s.get("Kind") == 1 and "fecha" in s.get("Name", "").lower()), None)
+        medidas = [s for s in sel if s.get("Kind") == 2]
+        real = next((s["Value"] for s in medidas if "valordemanda" in s.get("Name", "").lower()), None)
+        pron = next((s["Value"] for s in medidas if s["Value"] != real), None)
+        if not (fecha and real and pron):
+            continue
+        curva = {"pron": [], "real": []}
+        for fila in decodificar_dsr(datos["dsr"]):
+            t = fila.get(fecha)
+            if not isinstance(t, (int, float)):
+                continue
+            # Power BI entrega la hora local de Colombia escrita como si fuera UTC
+            h = datetime.fromtimestamp(t / 1000, timezone.utc)
+            minuto = round(h.hour * 60 + h.minute + h.second / 60.0, 1)
+            for clave, campo in (("pron", pron), ("real", real)):
+                v = fila.get(campo)
+                if isinstance(v, (int, float)):
+                    curva[clave].append([minuto, round(v, 1)])
+        if curva["real"] or curva["pron"]:
+            return curva
+    return None
+
+
 def capturar():
     from playwright.sync_api import sync_playwright
 
@@ -126,16 +187,18 @@ def capturar():
         for r in respuestas:
             try:
                 consultas.append(r.json())
-            except Exception as e:
-                consultas.append({"error": str(e)[:200]})
-        with open(os.path.join(CARPETA, "consultas.json"), "w", encoding="utf-8") as f:
-            json.dump(consultas, f, ensure_ascii=False)
-        print("Respuestas de Power BI guardadas:", len(consultas))
+            except Exception:
+                pass
+        curva = None
+        try:
+            curva = extraer_curva(consultas)
+        except Exception as e:
+            print("Aviso: no se pudieron leer los datos de la grafica (%s)" % str(e)[:80])
         navegador.close()
 
     if os.path.getsize(IMAGEN) < 20000:
         raise RuntimeError("la captura salio casi vacia (%d bytes)" % os.path.getsize(IMAGEN))
-    return dato
+    return dato, curva
 
 
 def conservar_anterior():
@@ -153,11 +216,17 @@ def conservar_anterior():
 def main():
     ahora = datetime.now(TZ_CO)
     try:
-        dato = capturar()
+        dato, curva = capturar()
         with open(INFO, "w", encoding="utf-8") as f:
             json.dump({"hora": ahora.strftime("%H:%M"), "fecha": ahora.strftime("%d/%m/%Y"),
-                       "iso": ahora.isoformat(timespec="seconds"), "dato": dato, "ok": True}, f)
+                       "iso": ahora.isoformat(timespec="seconds"), "dato": dato, "ok": True,
+                       "curva": curva}, f, separators=(",", ":"))
         print("[OK] Captura guardada:", IMAGEN, os.path.getsize(IMAGEN), "bytes | dato XM:", dato)
+        if curva:
+            print("     Curva: %d puntos de pronostico, %d de tiempo real (ultimo %s MW)"
+                  % (len(curva["pron"]), len(curva["real"]), curva["real"][-1][1] if curva["real"] else "--"))
+        else:
+            print("     Sin datos de la curva: el tablero mostrara la imagen")
     except Exception as e:
         print("[ERROR] Captura fallida:", e)
         conservar_anterior()

@@ -517,7 +517,7 @@ function mostrar(){
 function barraInferior(){
   $('t0').innerHTML = D.precio ? f(D.precio.ultimo,0) : '--';
   $('t1').innerHTML = D.demanda ? f(D.demanda.ultimo,0) : '--';
-  $('t2').innerHTML = AHORA ? AHORA.hora : '--';
+  $('t2').innerHTML = AHORA ? (AHORA.dato || AHORA.hora) : '--';
   $('t3').innerHTML = D.generacion ? f(D.generacion.renovable_pct,0)+' %' : '--';
   $('t4').innerHTML = D.embalses ? f(D.embalses.ultimo,0)+' %' : '--';
 }
@@ -532,12 +532,13 @@ function mostrarAhora(tit){
   lienzo(); $('g').style.display = 'none';
   if(!AHORA){
     poner(tit, '--', '', 'Disponible solo en la versión en la nube del tablero.', null);
-    $('nota').innerHTML = 'Toca &laquo;Ver en tiempo real&raquo; para abrir la página de XM.';
+    $('nota').innerHTML = 'Toca &laquo;Ver en XM&raquo; para abrir la página de XM.';
     $('nota').style.display = 'block'; return;
   }
   var m = minutosDesde(AHORA.iso), hace = (m === null) ? '' : (m < 1 ? 'hace menos de 1 min' : 'hace ' + m + ' min');
   var aviso = (m !== null && m > 30) ? ' &middot; <span style="color:#f85149">captura atrasada</span>' : '';
-  poner(tit, AHORA.hora, 'captura ' + hace, 'Imagen de la página de XM (Sinergox) &middot; se renueva cada 5 a 20 min' + aviso, null);
+  poner(tit, AHORA.dato || AHORA.hora, AHORA.dato ? 'último dato de XM' : 'captura ' + hace,
+        'Captura ' + hace + ' de la página de XM (Sinergox) &middot; se renueva cada 5 a 20 min' + aviso, null);
   var img = $('img'), src = 'tr/demanda.png?v=' + encodeURIComponent(AHORA.iso);
   if(img.getAttribute('src') !== src) img.setAttribute('src', src);
   img.style.display = 'block';

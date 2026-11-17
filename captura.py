@@ -100,6 +100,113 @@ def extraer_curva(consultas):
     return None
 
 
+JS_SVG = """() => {
+  // Lee la grafica dibujada (SVG): marcas de los ejes y trazos de las series, en pixeles de pantalla
+  const ticksY = [], ticksX = [];
+  for (const t of document.querySelectorAll('svg text')) {
+    const s = (t.textContent || '').trim(), r = t.getBoundingClientRect();
+    if (!r.width) continue;
+    let m = s.match(/^([0-9]+(?:[.,][0-9]+)?) ?mil$/i);
+    if (m) { ticksY.push([parseFloat(m[1].replace(',', '.')) * 1000, r.top + r.height / 2, r.right]); continue; }
+    m = s.match(/^([0-9]{1,2}):([0-9]{2})$/);
+    if (m) ticksX.push([parseInt(m[1]) * 60 + parseInt(m[2]), r.left + r.width / 2, r.top]);
+  }
+  const trazos = [];
+  for (const p of document.querySelectorAll('svg path')) {
+    let largo = 0;
+    try { largo = p.getTotalLength(); } catch (e) { continue; }
+    const r = p.getBoundingClientRect();
+    if (largo < 150 || r.width < 60) continue;
+    const ctm = p.getScreenCTM(); if (!ctm) continue;
+    const cs = getComputedStyle(p), n = Math.min(15000, Math.ceil(largo / 0.3)), pts = [];
+    for (let i = 0; i <= n; i++) {
+      const q = p.getPointAtLength(largo * i / n);
+      pts.push([q.x * ctm.a + q.y * ctm.c + ctm.e, q.x * ctm.b + q.y * ctm.d + ctm.f]);
+    }
+    trazos.push({clase: String(p.getAttribute('class') || ''), stroke: cs.stroke, fill: cs.fill,
+                 opac: cs.fillOpacity, largo: largo, caja: [r.left, r.top, r.width, r.height], pts: pts});
+  }
+  return {ticksY, ticksX, trazos};
+}"""
+
+
+def ajuste(pares):
+    """Recta por minimos cuadrados: pixel -> valor."""
+    n = float(len(pares))
+    sx = sum(p for p, _ in pares); sy = sum(v for _, v in pares)
+    sxx = sum(p * p for p, _ in pares); sxy = sum(p * v for p, v in pares)
+    a = (n * sxy - sx * sy) / (n * sxx - sx * sx)
+    return a, (sy - a * sx) / n
+
+
+def curva_desde_svg(lect):
+    """Convierte los trazos del SVG en (minuto del dia, MW). Cada serie se toma por su borde superior."""
+    ty = {round(y, 1): v for v, y, _ in lect["ticksY"]}
+    tx = {round(x, 1): v for v, x, _ in lect["ticksX"]}
+    if len(ty) < 2 or len(tx) < 2:
+        return None
+    ay, by = ajuste([(y, v) for y, v in ty.items()])
+    ax, bx = ajuste([(x, v) for x, v in tx.items()])
+    xmin = min(tx) - 5
+    ybase = max(ty)  # el eje Y mas bajo marcado
+    series = []
+    for t in lect["trazos"]:
+        top = {}
+        for px, py in t["pts"]:
+            if px < xmin:
+                continue
+            m = int(round(ax * px + bx))
+            if 0 <= m <= 1440:
+                v = ay * py + by
+                if m not in top or v > top[m]:
+                    top[m] = v
+        if len(top) < 20:
+            continue
+        mins = sorted(top)
+        # descartar rejillas y lineas planas
+        vals = [top[m] for m in mins]
+        if max(vals) - min(vals) < 50:
+            continue
+        series.append({"fin": mins[-1], "ini": mins[0], "puntos": [[m, round(top[m], 1)] for m in mins],
+                       "color": t["stroke"] if t["stroke"] not in ("none", "") else t["fill"], "clase": t["clase"]})
+    if not series:
+        return None
+    # agrupar por color (orden del documento: Power BI dibuja primero el pronostico)
+    grupos = []
+    for x in series:
+        g = next((g for g in grupos if g["color"] == x["color"]), None)
+        if g is None:
+            g = {"color": x["color"], "top": {}}
+            grupos.append(g)
+        for m, v in x["puntos"]:
+            if m not in g["top"] or v > g["top"][m]:
+                g["top"][m] = v
+    todos = [v for g in grupos for v in g["top"].values()]
+    # base del area = fondo de la grafica; se quitan en los extremos los puntos pegados a ella
+    base = min(todos) + 0.005 * (max(todos) - min(todos))
+    for g in grupos:
+        pts = [[m, g["top"][m]] for m in sorted(g["top"])]
+        while len(pts) > 2 and pts[-1][1] <= base:
+            pts.pop()
+        while len(pts) > 2 and pts[0][1] <= base:
+            pts.pop(0)
+        g["puntos"] = pts
+        g["fin"] = pts[-1][0]
+    pron = grupos[0]["puntos"]
+    real = grupos[1]["puntos"] if len(grupos) > 1 else []
+    if len(grupos) > 1 and grupos[0]["fin"] + 15 < grupos[1]["fin"]:
+        pron, real = real, pron
+    def cada5(p):
+        out, ult = [], -10
+        for m, v in p:
+            if m - ult >= 5 or m == p[-1][0]:
+                out.append([m, v]); ult = m
+        return out
+    if not real and not pron:
+        return None
+    return {"pron": cada5(pron), "real": cada5(real), "origen": "svg"}
+
+
 def capturar():
     from playwright.sync_api import sync_playwright
 
@@ -116,6 +223,9 @@ def capturar():
         # Guardar las respuestas de Power BI con los datos de la grafica
         respuestas = []
         pagina.on("response", lambda r: respuestas.append(r) if "querydata" in r.url.lower() else None)
+        red = []
+        pagina.context.on("response", lambda r: red.append((r.request.method, r.status, r.url[:140]))
+                          if ("analysis.windows.net" in r.url or "powerbi" in r.url) else None)
         pagina.goto(URL_XM, wait_until="domcontentloaded", timeout=90000)
 
         # Rechazar cookies opcionales si aparece el aviso
@@ -202,7 +312,22 @@ def capturar():
             curva = extraer_curva(consultas)
         except Exception as e:
             print("Aviso: no se pudieron leer los datos de la grafica (%s)" % str(e)[:80])
+        if not curva and frame is not None:   # segundo intento: leer la grafica dibujada
+            try:
+                lect = frame.evaluate(JS_SVG)
+                print("SVG: %d marcas Y, %d marcas X, %d trazos" % (len(lect["ticksY"]), len(lect["ticksX"]), len(lect["trazos"])))
+                for t in lect["trazos"][:12]:
+                    print("  trazo clase=%s stroke=%s fill=%s largo=%d caja=%s" % (
+                        t["clase"][:30], t["stroke"], t["fill"], t["largo"], [round(v) for v in t["caja"]]))
+                curva = curva_desde_svg(lect)
+                if curva:
+                    print("Curva desde SVG: %d puntos de pronostico, %d de tiempo real" % (len(curva["pron"]), len(curva["real"])))
+            except Exception as e:
+                print("Aviso: no se pudo leer el SVG (%s)" % str(e)[:120])
         if not curva:   # diagnostico para ajustar la lectura si Power BI cambia
+            print("Red Power BI:")
+            for m, st, u in red[:40]:
+                print("  ", m, st, u)
             print("Diagnostico Power BI: %d respuestas querydata, %d legibles" % (len(respuestas), len(consultas)))
             for c in consultas[:8]:
                 try:

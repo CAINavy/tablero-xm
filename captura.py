@@ -100,14 +100,22 @@ def extraer_curva(consultas):
     return None
 
 
-JS_SVG = """() => {
+JS_SVG = r"""() => {
   // Lee la grafica dibujada (SVG): marcas de los ejes y trazos de las series, en pixeles de pantalla
-  const ticksY = [], ticksX = [];
-  for (const t of document.querySelectorAll('svg text')) {
-    const s = (t.textContent || '').trim(), r = t.getBoundingClientRect();
-    if (!r.width) continue;
+  const ticksY = [], ticksX = [], muestras = [];
+  // Marcas de los ejes: textos cortos ("13 mil", "3:00"), en SVG o en HTML
+  for (const t of document.querySelectorAll('text, tspan, title, span, div')) {
+    if (t.childElementCount > 0 && t.tagName.toLowerCase() !== 'text') continue;
+    const s = (t.textContent || '').replace(/[   ]/g, ' ').trim();
+    if (!s || s.length > 12) continue;
+    let r = t.getBoundingClientRect();
+    if (t.tagName.toLowerCase() === 'title' && t.parentElement) r = t.parentElement.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
+    if (muestras.length < 40) muestras.push(t.tagName + ':' + s + '@' + Math.round(r.left) + ',' + Math.round(r.top));
     let m = s.match(/^([0-9]+(?:[.,][0-9]+)?) ?mil$/i);
     if (m) { ticksY.push([parseFloat(m[1].replace(',', '.')) * 1000, r.top + r.height / 2, r.right]); continue; }
+    m = s.match(/^([0-9]+)\.([0-9]{3})$/);
+    if (m) { ticksY.push([parseFloat(m[1] + m[2]), r.top + r.height / 2, r.right]); continue; }
     m = s.match(/^([0-9]{1,2}):([0-9]{2})$/);
     if (m) ticksX.push([parseInt(m[1]) * 60 + parseInt(m[2]), r.left + r.width / 2, r.top]);
   }
@@ -126,7 +134,7 @@ JS_SVG = """() => {
     trazos.push({clase: String(p.getAttribute('class') || ''), stroke: cs.stroke, fill: cs.fill,
                  opac: cs.fillOpacity, largo: largo, caja: [r.left, r.top, r.width, r.height], pts: pts});
   }
-  return {ticksY, ticksX, trazos};
+  return {ticksY, ticksX, trazos, muestras};
 }"""
 
 
@@ -150,7 +158,10 @@ def curva_desde_svg(lect):
     xmin = min(tx) - 5
     ybase = max(ty)  # el eje Y mas bajo marcado
     series = []
-    for t in lect["trazos"]:
+    lineas = [t for t in lect["trazos"] if t["clase"].split()[:1] == ["line"]]
+    for t in (lineas or lect["trazos"]):
+        if "interactivity" in t["clase"]:
+            continue
         top = {}
         for px, py in t["pts"]:
             if px < xmin:
@@ -316,6 +327,8 @@ def capturar():
             try:
                 lect = frame.evaluate(JS_SVG)
                 print("SVG: %d marcas Y, %d marcas X, %d trazos" % (len(lect["ticksY"]), len(lect["ticksX"]), len(lect["trazos"])))
+                if len(lect["ticksY"]) < 2 or len(lect["ticksX"]) < 2:
+                    print("  textos:", lect.get("muestras"))
                 for t in lect["trazos"][:12]:
                     print("  trazo clase=%s stroke=%s fill=%s largo=%d caja=%s" % (
                         t["clase"][:30], t["stroke"], t["fill"], t["largo"], [round(v) for v in t["caja"]]))

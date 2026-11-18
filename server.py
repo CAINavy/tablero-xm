@@ -669,15 +669,16 @@ function curvaSuave(x, px, py){
 function curvaDias(x, x0, y0, W, H, horas, fechas, gwh, color, t, marco){
   var n = horas.length; if(n < 24 || H < t*4) return;
   var vals = horas.map(function(h){ return h[1]; });
-  var e = escala(0, Math.max.apply(null, vals)*1.12, 3), mx = e.mx;
+  // eje Y del valor mas bajo al mas alto de esos dias
+  var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals); if(mx <= mn) mx = mn + 1;
   x.font = t+'px Roboto,Arial';
   var L = marco ? marco.L : x.measureText(f(mx,0)).width + t*0.8, R = marco ? marco.R : t*0.6, T = t*2.4, B = t*1.9;
   function X(i){ return x0 + L + (W-L-R) * (i+0.5)/n; }
-  function Y(v){ return y0 + T + (H-T-B) * (1 - v/mx); }
+  function Y(v){ return y0 + T + (H-T-B) * (1 - (v-mn)/(mx-mn)); }
   x.textBaseline='middle'; x.textAlign='left'; x.fillStyle='#c9d1d9';
   x.fillText('Demanda hora a hora (MW) · últimos días publicados', x0+L, y0+t*0.7);
-  for(var v=0; v<=mx+e.paso/2; v+=e.paso){
-    var y = Y(v);
+  for(var k=0;k<=2;k++){
+    var v = mn + (mx-mn)*k/2, y = Y(v);
     x.strokeStyle='#21262d'; x.lineWidth=1; x.beginPath(); x.moveTo(x0+L,y); x.lineTo(x0+W-R,y); x.stroke();
     x.fillStyle='#8b949e'; x.textAlign='right'; x.fillText(f(v,0), x0+L-t*0.4, y);
   }
@@ -700,9 +701,9 @@ function curvaDias(x, x0, y0, W, H, horas, fechas, gwh, color, t, marco){
   }
   var g = x.createLinearGradient(0, y0+T, 0, y0+H-B);
   g.addColorStop(0, color+'44'); g.addColorStop(1, color+'00');
-  x.beginPath(); x.moveTo(X(0), Y(0));
+  x.beginPath(); x.moveTo(X(0), Y(mn));
   for(i=0;i<n;i++) x.lineTo(X(i), Y(vals[i]));
-  x.lineTo(X(n-1), Y(0)); x.closePath(); x.fillStyle=g; x.fill();
+  x.lineTo(X(n-1), Y(mn)); x.closePath(); x.fillStyle=g; x.fill();
   x.beginPath(); for(i=0;i<n;i++){ if(i) x.lineTo(X(i),Y(vals[i])); else x.moveTo(X(i),Y(vals[i])); }
   x.strokeStyle=color; x.lineWidth=Math.max(2,t*0.16); x.lineJoin='round'; x.stroke();
 }
@@ -710,8 +711,8 @@ function curvaDias(x, x0, y0, W, H, horas, fechas, gwh, color, t, marco){
 function lineaDias(x, x0, y0, W, H, fechas, vals, color, t, marco){
   var n = vals.length; if(!n || H < t*4) return;
   x.font = t+'px Roboto,Arial';
-  // eje Y desde cero, con marcas redondas
-  var e = escala(0, Math.max.apply(null, vals)*1.12 || 1, 3), mn = 0, mx = e.mx;
+  // eje Y del valor mas bajo al mas alto de esos dias
+  var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals); if(mx <= mn) mx = mn + 1;
   // mismos margenes que la curva de hoy, para que las dos graficas queden alineadas
   var L = marco ? marco.L : x.measureText(f(mx,0)).width + t*0.8, R = marco ? marco.R : t*0.6, T = t*2.6, B = t*1.9;
   var ip = t*1.6;   // margen interno para que las etiquetas de los extremos no choquen con el eje
@@ -719,8 +720,8 @@ function lineaDias(x, x0, y0, W, H, fechas, vals, color, t, marco){
   function Y(v){ return y0 + T + (H-T-B) * (1-(v-mn)/(mx-mn)); }
   x.textBaseline='middle'; x.textAlign='left'; x.fillStyle='#c9d1d9';
   x.fillText('Demanda por día (GWh) · últimos '+n+' días publicados', x0+L, y0+t*0.7);
-  for(var v=0; v<=mx+e.paso/2; v+=e.paso){
-    var y = Y(v);
+  for(var k=0;k<=2;k++){
+    var v = mn + (mx-mn)*k/2, y = Y(v);
     x.strokeStyle='#21262d'; x.lineWidth=1; x.beginPath(); x.moveTo(x0+L,y); x.lineTo(x0+W-R,y); x.stroke();
     x.fillStyle='#8b949e'; x.textAlign='right'; x.fillText(f(v,0), x0+L-t*0.4, y);
   }
